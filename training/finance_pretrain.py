@@ -1,0 +1,1156 @@
+"""
+5-phase finance pretraining for BushidoMythos.
+
+Phase 1 — General fluency:
+    WikiText-103 (~135M tokens, 20 000 steps)
+Phase 2 — Reasoning:
+    open-web-math/open-web-math  (60%: mathematical web text, quantitative reasoning)
+    microsoft/orca-math-word-problems-200k (math word-problem solutions)
+    databricks/databricks-dolly-15k (instruction-following prose reasoning)
+    Combined: ~80K OpenWebMath rows + ~47K Orca rows + ~15K Dolly rows, 8 000 steps
+Phase 3 — Finance domain + instruction tuning:
+    ashraq/financial-news-articles (~306K articles, plain text)
+    gbharti/finance-alpaca (~21K instruction examples, formatted as plain text)
+    Combined: 8 000 steps
+Phase 4 — Trading methodology SFT:
+    FinGPT/fingpt-forecaster-dow30-202305-202405 (~1.2K stock-movement prediction examples)
+    FinGPT/fingpt-sentiment-train (~76K sentiment-analysis examples)
+    Combined: ~78K pairs, 3 000 steps
+Phase 5 — Trading discipline / risk-management QA  ← FINAL calibration phase:
+    FinGPT/fingpt-fiqa_qa (~17K financial QA examples, 3 000 steps)
+    Last-mile SFT anchors the model's response style on risk acknowledgement
+    and uncertainty disclosure before deployment.
+
+Usage:
+    # Full run (all 5 phases):
+    python training/finance_pretrain.py --phase 0
+
+    # Resume an interrupted run:
+    python training/finance_pretrain.py --auto_resume
+
+    # Phase 3 only (instruction tuning from phase2_final.pt):
+    python training/finance_pretrain.py --phase 3 --resume checkpoints/finance_a100_v2/phase2_final.pt
+
+    # Phase 4 only (trading methodology from phase3_final.pt):
+    python training/finance_pretrain.py --phase 4 --resume checkpoints/finance_a100_v2/phase3_final.pt
+
+    # Phase 5 only (risk-management QA from phase4_final.pt):
+    python training/finance_pretrain.py --phase 5 --resume checkpoints/finance_a100_v2/phase4_final.pt
+
+    # Quick smoke test:
+    python training/finance_pretrain.py --phase 1 --phase1_steps 100 --log_every 10
+"""
+
+import argparse
+import datetime
+import math
+import sys
+import time
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+from torch.optim import AdamW
+
+
+class _Tee:
+    """Duplicate stdout writes to a log file with timestamps."""
+
+    def __init__(self, log_path: Path):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(log_path, "a", buffering=1, encoding="utf-8")
+        self._stdout = sys.stdout
+        sys.stdout = self
+
+    def write(self, data: str) -> int:
+        if data:
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for line in data.splitlines(keepends=True):
+                timestamped = f"[{ts}] {line}" if line.strip() else line
+                self._file.write(timestamped)
+            self._stdout.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self._file.flush()
+        self._stdout.flush()
+
+    def close(self) -> None:
+        sys.stdout = self._stdout
+        self._file.close()
+
+repo_root = Path(__file__).parent.parent
+sys.path.insert(0, str(repo_root))
+
+from bushido_mythos import MythosConfig, BushidoMythos
+
+
+# ──────────────────────────────────────────────────────────────
+# Device
+# ──────────────────────────────────────────────────────────────
+
+def get_device_and_dtype(dtype_arg: str) -> tuple[torch.device, torch.dtype]:
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        if dtype_arg == "auto":
+            # bfloat16 requires Ampere (SM 8.0+). T4 is Turing (SM 7.5) — use float16.
+            cc_major = torch.cuda.get_device_properties(0).major
+            dtype = torch.bfloat16 if cc_major >= 8 else torch.float16
+        else:
+            dtype = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}[dtype_arg]
+        return device, dtype
+    if torch.backends.mps.is_available():
+        return torch.device("mps"), torch.float32
+    return torch.device("cpu"), torch.float32
+
+
+# ──────────────────────────────────────────────────────────────
+# Tokenizer helper
+# ──────────────────────────────────────────────────────────────
+
+def _get_gpt2_tokenizer():
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained("gpt2")
+
+
+# ──────────────────────────────────────────────────────────────
+# Dataset classes
+# ──────────────────────────────────────────────────────────────
+
+class TextDataset:
+    """
+    Generic flat-token dataset built from a list of text rows.
+    Tokenises row-by-row, concatenates, then serves fixed-length chunks.
+    Disk-caches the token tensor so the second run is instant.
+    """
+
+    def __init__(
+        self,
+        rows: list[str],
+        vocab_size: int,
+        seq_len: int,
+        batch_size: int,
+        device: torch.device,
+        cache_path: Path,
+    ):
+        self.seq_len = seq_len
+        self.batch_size = batch_size
+        self.device = device
+
+        if cache_path.exists():
+            print(f"  Loading cached tokens from {cache_path}")
+            self._ids = torch.load(cache_path, weights_only=True)
+        else:
+            print(f"  Tokenising {len(rows):,} rows (will cache to {cache_path}) …")
+            tok = _get_gpt2_tokenizer()
+            all_ids: list[int] = []
+            for i, row in enumerate(rows):
+                row = row.strip()
+                if not row:
+                    continue
+                toks = tok.encode(row, add_special_tokens=False)
+                all_ids.extend(min(t, vocab_size - 1) for t in toks)
+                if (i + 1) % 50_000 == 0:
+                    print(f"    … {i+1:,}/{len(rows):,} rows ({len(all_ids):,} tokens)")
+            self._ids = torch.tensor(all_ids, dtype=torch.long)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(self._ids, cache_path)
+            print(f"  Cached {len(self._ids):,} tokens → {cache_path}")
+
+    def __len__(self) -> int:
+        return max(1, (len(self._ids) - self.seq_len - 1) // (self.batch_size * self.seq_len))
+
+    def __iter__(self):
+        ids = self._ids
+        n = len(ids) - self.seq_len - 1
+        if n <= 0:
+            raise ValueError(
+                f"Token count ({len(ids):,}) is too small for seq_len={self.seq_len}. "
+                "Check your cache or reduce --seq_len."
+            )
+        starts = torch.randperm(n)[: len(self) * self.batch_size]
+        for i in range(0, len(starts) - self.batch_size + 1, self.batch_size):
+            batch_starts = starts[i : i + self.batch_size]
+            x = torch.stack([ids[s : s + self.seq_len] for s in batch_starts]).to(self.device)
+            y = torch.stack([ids[s + 1 : s + self.seq_len + 1] for s in batch_starts]).to(self.device)
+            yield x, y
+
+
+# Bump this when tokenization logic changes to invalidate old caches.
+_CACHE_VERSION = "v1"
+
+
+def build_wikitext103(vocab_size: int, seq_len: int, batch_size: int, device: torch.device, cache_dir: str) -> TextDataset:
+    from datasets import load_dataset
+    print("Loading WikiText-103 …")
+    ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="train")
+    rows = ds["text"]
+    print(f"  {len(rows):,} rows loaded from WikiText-103.")
+    cache_path = Path(cache_dir) / f"wikitext103_gpt2_{vocab_size}_{_CACHE_VERSION}.pt"
+    dataset = TextDataset(rows, vocab_size, seq_len, batch_size, device, cache_path)
+    del rows  # free list; token tensor is in dataset._ids
+    return dataset
+
+
+def build_financial_news(vocab_size: int, seq_len: int, batch_size: int, device: torch.device, cache_dir: str) -> TextDataset:
+    from datasets import load_dataset
+    print("Loading ashraq/financial-news-articles …")
+    ds = load_dataset("ashraq/financial-news-articles", split="train")
+
+    # Validate expected columns exist
+    sample = ds[0]
+    available = set(sample.keys())
+    required = {"title", "text"}
+    if not required & available:
+        raise RuntimeError(
+            f"financial-news-articles has no 'title' or 'text' column. "
+            f"Available columns: {sorted(available)}"
+        )
+
+    rows: list[str] = []
+    for item in ds:
+        title = (item.get("title") or "").strip()
+        text  = (item.get("text")  or "").strip()
+        if title and text:
+            rows.append(f"{title}\n{text}")
+        elif text:
+            rows.append(text)
+        elif title:
+            rows.append(title)
+    print(f"  {len(rows):,} articles loaded.")
+    cache_path = Path(cache_dir) / f"financial_news_gpt2_{vocab_size}_{_CACHE_VERSION}.pt"
+
+    dataset = TextDataset(rows, vocab_size, seq_len, batch_size, device, cache_path)
+    del rows
+    return dataset
+
+
+# ──────────────────────────────────────────────────────────────
+# Instruction-tuning helpers (Phase 3 & 4)
+# ──────────────────────────────────────────────────────────────
+
+_INSTRUCT_EOS = "<|endoftext|>"  # GPT-2 EOS — marks end of each example
+
+
+def _format_instruct(instruction: str, response: str, context: str = "") -> str:
+    """Format one instruction-response pair into the canonical training string."""
+    parts = [f"### Instruction:\n{instruction.strip()}"]
+    if context.strip():
+        parts.append(f"### Input:\n{context.strip()}")
+    parts.append(f"### Response:\n{response.strip()}")
+    return "\n\n".join(parts) + _INSTRUCT_EOS
+
+
+def _tokenize_sft(
+    tok, instruction: str, response: str, context: str, vocab_size: int
+) -> tuple[list[int], list[bool]]:
+    """Tokenize one pair; loss_mask=True for response tokens only."""
+    if context.strip():
+        prompt = (f"### Instruction:\n{instruction.strip()}\n\n"
+                  f"### Input:\n{context.strip()}\n\n### Response:\n")
+    else:
+        prompt = f"### Instruction:\n{instruction.strip()}\n\n### Response:\n"
+    response_text = response.strip() + _INSTRUCT_EOS
+
+    prompt_ids   = [min(t, vocab_size - 1) for t in tok.encode(prompt,         add_special_tokens=False)]
+    response_ids = [min(t, vocab_size - 1) for t in tok.encode(response_text,  add_special_tokens=False)]
+    ids  = prompt_ids + response_ids
+    mask = [False] * len(prompt_ids) + [True] * len(response_ids)
+    return ids, mask
+
+
+class SFTDataset:
+    """
+    Instruction-tuning dataset with response-only loss masking.
+    Yields (x, y, loss_mask) where loss_mask=True only for response tokens.
+    """
+
+    def __init__(
+        self,
+        pairs: list[tuple[str, str, str]],  # (instruction, response, context)
+        vocab_size: int,
+        seq_len: int,
+        batch_size: int,
+        device: torch.device,
+        cache_path: Path,
+    ):
+        self.seq_len = seq_len
+        self.batch_size = batch_size
+        self.device = device
+
+        if cache_path.exists():
+            print(f"  Loading cached SFT tokens from {cache_path}")
+            saved = torch.load(cache_path, weights_only=True)
+            self._ids  = saved["ids"]
+            self._mask = saved["mask"]
+        else:
+            print(f"  Tokenising {len(pairs):,} instruction pairs (will cache to {cache_path}) …")
+            tok = _get_gpt2_tokenizer()
+            all_ids:  list[int]  = []
+            all_mask: list[bool] = []
+            for i, (inst, resp, ctx) in enumerate(pairs):
+                ids, mask = _tokenize_sft(tok, inst, resp, ctx, vocab_size)
+                all_ids.extend(ids)
+                all_mask.extend(mask)
+                if (i + 1) % 5_000 == 0:
+                    print(f"    … {i+1:,}/{len(pairs):,} pairs ({len(all_ids):,} tokens)")
+            self._ids  = torch.tensor(all_ids,  dtype=torch.long)
+            self._mask = torch.tensor(all_mask, dtype=torch.bool)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({"ids": self._ids, "mask": self._mask}, cache_path)
+            print(f"  Cached {len(self._ids):,} tokens → {cache_path}")
+
+    def __len__(self) -> int:
+        return max(1, (len(self._ids) - self.seq_len - 1) // (self.batch_size * self.seq_len))
+
+    def __iter__(self):
+        n = len(self._ids) - self.seq_len - 1
+        if n <= 0:
+            raise ValueError(f"Token count ({len(self._ids):,}) too small for seq_len={self.seq_len}.")
+        starts = torch.randperm(n)[: len(self) * self.batch_size]
+        for i in range(0, len(starts) - self.batch_size + 1, self.batch_size):
+            bs = starts[i : i + self.batch_size]
+            x    = torch.stack([self._ids [s : s + self.seq_len    ] for s in bs]).to(self.device)
+            y    = torch.stack([self._ids [s + 1 : s + self.seq_len + 1] for s in bs]).to(self.device)
+            mask = torch.stack([self._mask[s + 1 : s + self.seq_len + 1] for s in bs]).to(self.device)
+            yield x, y, mask
+
+
+def _extract_sft_pairs(
+    ds,
+    name: str,
+    instruction_cols: list,
+    output_cols: list,
+    input_cols: list = None,
+) -> list:
+    """Flexible column extractor for SFT datasets.
+
+    Tries each candidate column name in order, uses the first that exists.
+    Skips rows where instruction or output is empty and reports counts.
+    Raises KeyError with diagnostics if required columns are absent.
+    """
+    available = set(ds.column_names)
+    inst_col = next((c for c in instruction_cols if c in available), None)
+    out_col  = next((c for c in output_cols      if c in available), None)
+    in_col   = next((c for c in (input_cols or []) if c in available), None)
+
+    if inst_col is None or out_col is None:
+        raise KeyError(
+            f"[{name}] Required columns not found.\n"
+            f"  Tried instruction: {instruction_cols}\n"
+            f"  Tried output:      {output_cols}\n"
+            f"  Available:         {sorted(available)}"
+        )
+
+    col_info = f"instruction='{inst_col}' output='{out_col}'"
+    if in_col:
+        col_info += f" input='{in_col}'"
+    print(f"  Columns: {col_info}")
+
+    pairs, skipped = [], 0
+    for r in ds:
+        inst = str(r.get(inst_col) or "").strip()
+        resp = str(r.get(out_col)  or "").strip()
+        ctx  = str(r.get(in_col)   or "").strip() if in_col else ""
+        if not inst or not resp:
+            skipped += 1
+            continue
+        pairs.append((inst, resp, ctx))
+
+    print(f"  Loaded: {len(pairs):,}  Skipped (empty): {skipped:,}")
+    return pairs
+
+
+def build_reasoning_mix(
+    vocab_size: int, seq_len: int, batch_size: int, device: torch.device, cache_dir: str,
+    openwebmath_rows: int = 80_000,
+    orca_ratio: float = 35.0,
+    include_dolly: bool = False,
+    dolly_rows: int = 15_000,
+) -> TextDataset:
+    """Phase 2: OpenWebMath + Orca Math [+ Dolly] — quantitative and prose reasoning.
+
+    OpenWebMath: mathematical web text (equations, proofs, derivations).
+    Orca Math: chain-of-thought word-problem solutions — step-by-step decomposition.
+    Dolly (opt-in, --include_dolly): prose instruction-response pairs for explanation /
+        judgment / constraint-handling. License: CC BY-SA 3.0 (attribution + share-alike).
+        Enable only when your use-case is compatible with CC BY-SA obligations.
+
+    openwebmath_rows: rows to stream from OpenWebMath (full dataset = 6.3B tokens).
+    orca_ratio: Orca rows as % of openwebmath_rows (default 35 → ~47K rows).
+    include_dolly: opt-in flag for Dolly (CC BY-SA 3.0). Off by default.
+    dolly_rows: cap on Dolly rows when include_dolly=True.
+    """
+    import random
+    from datasets import load_dataset
+
+    random.seed(42)
+    rows: list[str] = []
+
+    # ── OpenWebMath (streamed to avoid downloading full 6.3B-token corpus) ──
+    print(f"Loading open-web-math/open-web-math (streaming, cap={openwebmath_rows:,}) …")
+    ds_owm = load_dataset("open-web-math/open-web-math", split="train", streaming=True)
+    for i, ex in enumerate(ds_owm):
+        if i >= openwebmath_rows:
+            break
+        text = (ex.get("text") or "").strip()
+        if len(text) > 100:
+            rows.append(text)
+    owm_count = len(rows)
+    print(f"  OpenWebMath: {owm_count:,} rows")
+
+    # ── Orca Math CoT word problems ──────────────────────────────────────────
+    target_orca = int(owm_count * orca_ratio / 100)
+    print(f"Loading microsoft/orca-math-word-problems-200k (target {target_orca:,} rows) …")
+    ds_orca = load_dataset("microsoft/orca-math-word-problems-200k", split="train")
+    orca_items = list(ds_orca)
+    random.shuffle(orca_items)
+    for item in orca_items[:target_orca]:
+        q = (item.get("question") or "").strip()
+        a = (item.get("answer") or "").strip()
+        if q and a:
+            rows.append(f"Question: {q}\nSolution: {a}")
+    print(f"  Orca Math: {len(rows) - owm_count:,} rows")
+
+    # ── Dolly prose reasoning (opt-in, CC BY-SA 3.0) ────────────────────────
+    dolly_count = 0
+    if include_dolly:
+        before_dolly = len(rows)
+        print(f"Loading databricks/databricks-dolly-15k (CC BY-SA 3.0, cap={dolly_rows:,}) …")
+        ds_dolly = load_dataset("databricks/databricks-dolly-15k", split="train")
+        dolly_items = list(ds_dolly)
+        random.shuffle(dolly_items)
+        for item in dolly_items[:dolly_rows]:
+            inst = (item.get("instruction") or "").strip()
+            ctx  = (item.get("context")     or "").strip()
+            resp = (item.get("response")    or "").strip()
+            if not inst or not resp:
+                continue
+            parts = [f"Instruction: {inst}"]
+            if ctx:
+                parts.append(f"Context: {ctx}")
+            parts.append(f"Response: {resp}")
+            rows.append("\n".join(parts))
+        dolly_count = len(rows) - before_dolly
+        print(f"  Dolly prose reasoning: {dolly_count:,} rows (CC BY-SA 3.0)")
+    else:
+        print("  Dolly: skipped (use --include_dolly to enable; license: CC BY-SA 3.0)")
+
+    random.shuffle(rows)
+    print(f"  Total reasoning mix: {len(rows):,} rows"
+          f"  (OWM={owm_count:,} Orca={len(rows)-owm_count-dolly_count:,} Dolly={dolly_count:,})")
+
+    # キャッシュ名にデータ構成バージョンを含める（配合変更時の誤 hit を防止）
+    _MIX_VERSION = "rmv1"
+    dolly_tag = f"_dolly{dolly_rows}" if include_dolly else "_nodolly"
+    cache_path = Path(cache_dir) / (
+        f"reasoning_mix_gpt2_{vocab_size}"
+        f"_owm{openwebmath_rows}_orca{int(orca_ratio)}{dolly_tag}_{_MIX_VERSION}_{_CACHE_VERSION}.pt"
+    )
+    dataset = TextDataset(rows, vocab_size, seq_len, batch_size, device, cache_path)
+    del rows
+    return dataset
+
+
+def build_finance_domain_mix(
+    vocab_size: int, seq_len: int, batch_size: int, device: torch.device, cache_dir: str,
+) -> TextDataset:
+    """Phase 3: financial-news-articles + finance-alpaca as plain text (domain + instruction exposure).
+
+    Both datasets are combined as plain next-token-prediction text (no loss masking).
+    Loss masking is reserved for Phase 4+ SFT where precise response anchoring matters.
+    finance-alpaca rows are formatted with the canonical ### Instruction / ### Response template
+    so the model learns the format naturally before Phase 4 SFT enforces it with masking.
+    """
+    import random
+    from datasets import load_dataset
+
+    rows: list[str] = []
+
+    # ── Financial news (plain text) ─────────────────────────────────────────
+    print("Loading ashraq/financial-news-articles …")
+    ds_news = load_dataset("ashraq/financial-news-articles", split="train")
+    for item in ds_news:
+        title = (item.get("title") or "").strip()
+        text  = (item.get("text")  or "").strip()
+        if title and text:
+            rows.append(f"{title}\n{text}")
+        elif text:
+            rows.append(text)
+        elif title:
+            rows.append(title)
+    print(f"  Financial news: {len(rows):,} articles")
+
+    # ── Finance-Alpaca (formatted as plain instruct text) ───────────────────
+    print("Loading gbharti/finance-alpaca …")
+    ds_alpaca = load_dataset("gbharti/finance-alpaca", split="train")
+    alpaca_count = 0
+    for item in ds_alpaca:
+        inst = (item.get("instruction") or "").strip()
+        out  = (item.get("output")      or "").strip()
+        ctx  = (item.get("input")       or "").strip()
+        if not inst or not out:
+            continue
+        parts = [f"### Instruction:\n{inst}"]
+        if ctx:
+            parts.append(f"### Input:\n{ctx}")
+        parts.append(f"### Response:\n{out}")
+        rows.append("\n\n".join(parts))
+        alpaca_count += 1
+    print(f"  Finance-Alpaca: {alpaca_count:,} examples")
+
+    random.shuffle(rows)
+    print(f"  Total finance domain mix: {len(rows):,} rows")
+    cache_path = Path(cache_dir) / f"finance_domain_mix_gpt2_{vocab_size}_{_CACHE_VERSION}.pt"
+    dataset = TextDataset(rows, vocab_size, seq_len, batch_size, device, cache_path)
+    del rows
+    return dataset
+
+
+def build_finance_alpaca(
+    vocab_size: int, seq_len: int, batch_size: int, device: torch.device, cache_dir: str
+) -> SFTDataset:
+    """Phase 3: gbharti/finance-alpaca — 21K financial instruction examples (response-only loss)."""
+    from datasets import load_dataset
+    print("Loading gbharti/finance-alpaca …")
+    ds = load_dataset("gbharti/finance-alpaca", split="train")
+    pairs = _extract_sft_pairs(ds, "finance-alpaca",
+                               instruction_cols=["instruction"],
+                               output_cols=["output"],
+                               input_cols=["input"])
+    cache_path = Path(cache_dir) / f"finance_alpaca_sft_{vocab_size}_{_CACHE_VERSION}.pt"
+    return SFTDataset(pairs, vocab_size, seq_len, batch_size, device, cache_path)
+
+
+def build_trading_qa(
+    vocab_size: int, seq_len: int, batch_size: int, device: torch.device, cache_dir: str
+) -> SFTDataset:
+    """Phase 5: FinGPT/fingpt-fiqa_qa — risk-management QA, final calibration phase."""
+    from datasets import load_dataset
+    print("Loading FinGPT/fingpt-fiqa_qa …")
+    ds = load_dataset("FinGPT/fingpt-fiqa_qa", split="train")
+    pairs = _extract_sft_pairs(ds, "fingpt-fiqa_qa",
+                               instruction_cols=["instruction"],
+                               output_cols=["output", "answer", "response"])
+    cache_path = Path(cache_dir) / f"trading_qa_sft_{vocab_size}_{_CACHE_VERSION}.pt"
+    return SFTDataset(pairs, vocab_size, seq_len, batch_size, device, cache_path)
+
+
+def build_trading_methodology_sft(
+    vocab_size: int, seq_len: int, batch_size: int, device: torch.device, cache_dir: str
+) -> SFTDataset:
+    """Phase 4: fingpt-forecaster-dow30 + fingpt-sentiment-train combined (~78K pairs).
+
+    Forecaster teaches market analysis and directional prediction (core of trading method).
+    Sentiment teaches reading market signals from news (input to trading decisions).
+    Runs BEFORE the risk-QA phase so the final calibration can anchor risk/uncertainty tone.
+
+    Dataset path changed from FinGPT/fingpt-forecaster (deprecated, 401) to the versioned
+    Dow 30 dataset FinGPT/fingpt-forecaster-dow30-202305-202405 (publicly accessible).
+    """
+    from datasets import load_dataset
+    print("Loading Phase 4 trading methodology datasets …")
+
+    pairs = []
+
+    ds_fore = load_dataset("FinGPT/fingpt-forecaster-dow30-202305-202405", split="train")
+    fore = _extract_sft_pairs(ds_fore, "fingpt-forecaster-dow30",
+                              instruction_cols=["prompt", "instruction"],
+                              output_cols=["answer", "output"],
+                              input_cols=["input"])
+    print(f"  fingpt-forecaster-dow30: {len(fore):,} examples")
+    pairs.extend(fore)
+
+    ds_sent = load_dataset("FinGPT/fingpt-sentiment-train", split="train")
+    sent = _extract_sft_pairs(ds_sent, "fingpt-sentiment-train",
+                              instruction_cols=["instruction"],
+                              output_cols=["output", "answer", "label"],
+                              input_cols=["input"])
+    print(f"  fingpt-sentiment-train: {len(sent):,} examples")
+    pairs.extend(sent)
+
+    print(f"  Total Phase 4: {len(pairs):,} examples")
+    cache_path = Path(cache_dir) / f"trading_methodology_sft_{vocab_size}_{_CACHE_VERSION}.pt"
+    return SFTDataset(pairs, vocab_size, seq_len, batch_size, device, cache_path)
+
+
+# ──────────────────────────────────────────────────────────────
+# LR schedule
+# ──────────────────────────────────────────────────────────────
+
+def lr_lambda(step: int, warmup: int, total: int, min_lr_ratio: float = 0.1) -> float:
+    if step < warmup:
+        return step / max(1, warmup)
+    progress = (step - warmup) / max(1, total - warmup)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+
+# ──────────────────────────────────────────────────────────────
+# Checkpoint helpers
+# ──────────────────────────────────────────────────────────────
+
+def _strip_compile_prefix(state_dict: dict) -> dict:
+    """Remove _orig_mod. prefix added by torch.compile so checkpoints are portable."""
+    if any(k.startswith("_orig_mod.") for k in state_dict):
+        return {k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k: v
+                for k, v in state_dict.items()}
+    return state_dict
+
+
+def _safe_torch_load(path: str, allow_unsafe: bool = False) -> dict:
+    """Load a checkpoint with weights_only=True by default.
+
+    PyTorch checkpoints are pickle-based; weights_only=False allows arbitrary
+    code execution if the file is malicious. Use allow_unsafe=True only for
+    checkpoints you created yourself or fully trust.
+    """
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except Exception as first_err:
+        if not allow_unsafe:
+            raise RuntimeError(
+                f"Cannot load {path!r} with weights_only=True: {first_err}\n"
+                "If this is a checkpoint you created yourself, re-run with "
+                "--allow_unsafe_checkpoint to permit pickle-based loading."
+            ) from first_err
+        import warnings
+        warnings.warn(
+            f"weights_only=True failed for {path!r}: {first_err}. "
+            "Falling back to weights_only=False — only load trusted checkpoints this way.",
+            stacklevel=2,
+        )
+        return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def save_checkpoint(
+    path: Path,
+    step: int,
+    model,
+    optimizer,
+    scheduler,
+    cfg: MythosConfig,
+    tag: str = "",
+    phase1_steps: int = 0,
+    phase2_steps: int = 0,
+    phase3_steps: int = 0,
+    phase4_steps: int = 0,
+    phase5_steps: int = 0,
+    scaler=None,
+):
+    payload = {
+        "step": step,
+        "model_state": _strip_compile_prefix(model.state_dict()),
+        "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
+        "cfg": cfg.__dict__,
+        "tag": tag,
+        "phase1_steps": phase1_steps,
+        "phase2_steps": phase2_steps,
+        "phase3_steps": phase3_steps,
+        "phase4_steps": phase4_steps,
+        "phase5_steps": phase5_steps,
+    }
+    if scaler is not None and scaler.is_enabled():
+        payload["scaler_state"] = scaler.state_dict()
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, path)
+    print(f"  → Saved: {path}")
+
+
+def load_checkpoint(path: str, model, optimizer, scheduler, scaler=None, allow_unsafe: bool = False):
+    print(f"Resuming from: {path}")
+    ckpt = _safe_torch_load(path, allow_unsafe=allow_unsafe)
+    state_key = "model_state" if "model_state" in ckpt else "model"
+    ckpt_sd = _strip_compile_prefix(ckpt[state_key])
+
+    # If model is torch.compile()'d, its state_dict keys have _orig_mod. prefix
+    model_sd = model.state_dict()
+    model_keys = list(model_sd.keys())
+    if model_keys and model_keys[0].startswith("_orig_mod."):
+        ckpt_sd = {"_orig_mod." + k: v for k, v in ckpt_sd.items()}
+
+    # Filter shape-mismatched keys (e.g. freqs_cis when seq_len changes)
+    filtered = {k: v for k, v in ckpt_sd.items() if k in model_sd and v.shape == model_sd[k].shape}
+    skipped = [k for k in ckpt_sd if k not in filtered]
+    if skipped:
+        print(f"  Skipping shape-mismatched keys: {skipped}")
+    model.load_state_dict(filtered, strict=False)
+    if "optimizer_state" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+    if "scheduler_state" in ckpt:
+        scheduler.load_state_dict(ckpt["scheduler_state"])
+    else:
+        # Legacy checkpoints without scheduler_state: replay steps
+        for _ in range(ckpt["step"]):
+            scheduler.step()
+    if scaler is not None and "scaler_state" in ckpt:
+        scaler.load_state_dict(ckpt["scaler_state"])
+    step = ckpt["step"]
+    p1 = ckpt.get("phase1_steps", "?")
+    p2 = ckpt.get("phase2_steps", "?")
+    p3 = ckpt.get("phase3_steps", "?")
+    p4 = ckpt.get("phase4_steps", "?")
+    p5 = ckpt.get("phase5_steps", "?")
+    print(f"  Resumed at step {step}  tag={ckpt.get('tag', '')}")
+    known = [x for x in [p1, p2, p3, p4, p5] if x != "?"]
+    if known:
+        print(f"  NOTE: use --phase1_steps {p1} --phase2_steps {p2} "
+              f"--phase3_steps {p3} --phase4_steps {p4} --phase5_steps {p5} to match the original run.")
+    return step
+
+
+# ──────────────────────────────────────────────────────────────
+# Single training phase
+# ──────────────────────────────────────────────────────────────
+
+def run_phase(
+    phase_name: str,
+    dataset,
+    model: BushidoMythos,
+    cfg: MythosConfig,
+    optimizer,
+    scheduler,
+    args: argparse.Namespace,
+    ckpt_dir: Path,
+    start_step: int,
+    total_steps: int,
+    phase_final_name: str,
+    device: torch.device,
+    amp_dtype: torch.dtype,
+    phase1_steps: int = 0,
+    phase2_steps: int = 0,
+    phase3_steps: int = 0,
+    phase4_steps: int = 0,
+    phase5_steps: int = 0,
+    resume_path: str = None,
+) -> int:
+    total_loss = 0.0
+    total_ce   = 0.0
+    total_aux  = 0.0
+    step = start_step
+    t0 = time.time()
+
+    use_amp = device.type == "cuda" and amp_dtype != torch.float32
+    autocast_device = device.type if device.type == "cuda" else "cpu"
+    _scaler_enabled = use_amp and amp_dtype == torch.float16
+    try:  # PyTorch 2.3+ prefers torch.amp.GradScaler('cuda', ...)
+        scaler = torch.amp.GradScaler("cuda", enabled=_scaler_enabled)
+    except Exception:
+        scaler = torch.cuda.amp.GradScaler(enabled=_scaler_enabled)
+
+    # Restore scaler state so float16 loss scaling resumes correctly
+    if resume_path and _scaler_enabled:
+        _ckpt = _safe_torch_load(resume_path, allow_unsafe=args.allow_unsafe_checkpoint)
+        if "scaler_state" in _ckpt:
+            scaler.load_state_dict(_ckpt["scaler_state"])
+        del _ckpt
+
+    grad_accum = getattr(args, 'grad_accum_steps', 1)
+    eff_batch  = args.batch_size * grad_accum
+
+    print(f"\n{'='*60}")
+    print(f"  {phase_name}: steps {start_step}–{total_steps}  "
+          f"batch={args.batch_size}  grad_accum={grad_accum}  eff_batch={eff_batch}  "
+          f"seq_len={args.seq_len}  dtype={amp_dtype}")
+    print(f"  log every {args.log_every}  save every {args.save_every}")
+    print(f"{'='*60}\n")
+
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    micro_step = 0
+    log_micros = 0  # actual micro-batch count since last log reset (avoids skewed average on resume)
+    epoch = 0
+    while step < total_steps:
+        epoch += 1
+        for batch in dataset:
+            if step >= total_steps:
+                break
+
+            # SFTDataset yields (x, y, loss_mask); TextDataset yields (x, y)
+            if len(batch) == 3:
+                x, y, loss_mask = batch
+                if not loss_mask.any():
+                    continue  # chunk is prompt-only — no response tokens to learn from
+            else:
+                x, y = batch
+                loss_mask = None
+
+            with torch.autocast(autocast_device, dtype=amp_dtype, enabled=use_amp):
+                logits = model(x)
+                if loss_mask is not None and loss_mask.any():
+                    ce_per_tok = F.cross_entropy(
+                        logits.reshape(-1, cfg.vocab_size),
+                        y.reshape(-1),
+                        reduction="none",
+                    )
+                    mask_f = loss_mask.reshape(-1).float()
+                    ce_loss = (ce_per_tok * mask_f).sum() / (mask_f.sum() + 1e-9)
+                else:
+                    ce_loss = F.cross_entropy(
+                        logits.reshape(-1, cfg.vocab_size),
+                        y.reshape(-1),
+                    )
+                loss = ce_loss + model._last_aux_loss
+
+            # Accumulate loss stats for logging (unscaled, per-micro-batch average)
+            total_loss += loss.item()
+            total_ce   += ce_loss.item()
+            total_aux  += model._last_aux_loss.item()
+            log_micros += 1
+
+            # Divide by grad_accum so summed gradients equal one full-batch gradient
+            scaler.scale(loss / grad_accum).backward()
+            micro_step += 1
+
+            if micro_step % grad_accum != 0:
+                continue  # keep accumulating micro-batch gradients
+
+            # ── Optimizer update (once per grad_accum micro-batches) ───────
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            model.update_moe_router_bias()
+            scheduler.step()
+            step += 1
+
+            if step % args.log_every == 0:
+                n = max(log_micros, 1)
+                avg_loss = total_loss / n
+                avg_ce   = total_ce   / n
+                avg_aux  = total_aux  / n
+                ppl = math.exp(min(avg_ce, 20))
+                elapsed = time.time() - t0
+                lr_now = scheduler.get_last_lr()[0]
+                print(
+                    f"[{phase_name}] step {step:6d}/{total_steps}"
+                    f"  loss={avg_loss:.4f}  ce={avg_ce:.4f}  aux={avg_aux:.4f}"
+                    f"  ppl={ppl:.1f}  lr={lr_now:.2e}  elapsed={elapsed:.0f}s"
+                )
+                total_loss = total_ce = total_aux = 0.0
+                log_micros = 0
+                t0 = time.time()
+
+            if step % args.save_every == 0:
+                save_checkpoint(
+                    ckpt_dir / f"step_{step:06d}.pt",
+                    step, model, optimizer, scheduler, cfg, tag=phase_name,
+                    phase1_steps=phase1_steps, phase2_steps=phase2_steps,
+                    phase3_steps=phase3_steps, phase4_steps=phase4_steps,
+                    phase5_steps=phase5_steps, scaler=scaler,
+                )
+
+    final_path = ckpt_dir / phase_final_name
+    save_checkpoint(
+        final_path, step, model, optimizer, scheduler, cfg, tag=phase_name,
+        phase1_steps=phase1_steps, phase2_steps=phase2_steps,
+        phase3_steps=phase3_steps, phase4_steps=phase4_steps,
+        phase5_steps=phase5_steps, scaler=scaler,
+    )
+    print(f"\n{phase_name} complete. Checkpoint: {final_path}\n")
+    return step, scaler
+
+
+# ──────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────
+
+def train(args: argparse.Namespace) -> None:
+    device, amp_dtype = get_device_and_dtype(args.dtype)
+
+    ckpt_dir = Path(args.ckpt_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = Path(args.log_file) if args.log_file else ckpt_dir / "train.log"
+    tee = _Tee(log_path)
+    print(f"Logging to: {log_path}")
+    print(f"Device: {device}  dtype: {amp_dtype}")
+
+    base_ckpt_path = args.base_ckpt
+
+    # ── Determine resume path first (needed for config fallback) ─
+    resume_path = args.resume
+    if resume_path is None and args.auto_resume:
+        candidates = sorted(ckpt_dir.glob("step_*.pt"))
+        if candidates:
+            resume_path = str(candidates[-1])
+
+    # ── Load config ───────────────────────────────────────────
+    # Priority: resume checkpoint > base_ckpt > error
+    base_ckpt = None
+    if Path(base_ckpt_path).exists():
+        print(f"Loading base checkpoint: {base_ckpt_path}")
+        base_ckpt = _safe_torch_load(base_ckpt_path, allow_unsafe=args.allow_unsafe_checkpoint)
+        cfg = MythosConfig(**base_ckpt["cfg"])
+    elif resume_path and Path(resume_path).exists():
+        print(f"Base checkpoint not found. Borrowing config from: {resume_path}")
+        _tmp = _safe_torch_load(resume_path, allow_unsafe=args.allow_unsafe_checkpoint)
+        cfg = MythosConfig(**_tmp["cfg"])
+        del _tmp
+    else:
+        raise FileNotFoundError(
+            f"No checkpoint found.\n"
+            f"  --base_ckpt: {base_ckpt_path} (not found)\n"
+            f"  --ckpt_dir:  {ckpt_dir} (no step_*.pt)\n"
+            f"Provide --base_ckpt or ensure --ckpt_dir has at least one step_*.pt."
+        )
+
+    # Apply seq_len override
+    if args.seq_len is not None:
+        cfg = MythosConfig(**{**cfg.__dict__, "max_seq_len": args.seq_len})
+
+    # Apply gradient checkpointing override (always force from CLI arg to avoid
+    # accidentally inheriting a stale True from a checkpoint's cfg)
+    if args.grad_checkpoint != cfg.use_gradient_checkpointing:
+        cfg = MythosConfig(**{**cfg.__dict__, "use_gradient_checkpointing": args.grad_checkpoint})
+
+    model = BushidoMythos(cfg).to(device)
+
+    # ── Load base weights (skipped when resuming — resume overwrites them) ─
+    if base_ckpt is not None and resume_path is None:
+        state_key = "model_state" if "model_state" in base_ckpt else "model"
+        ckpt_sd = base_ckpt[state_key]
+        model_sd = model.state_dict()
+        filtered = {k: v for k, v in ckpt_sd.items() if k in model_sd and v.shape == model_sd[k].shape}
+        skipped = [k for k in ckpt_sd if k not in filtered]
+        if skipped:
+            print(f"  Skipping shape-mismatched keys (will be re-init): {skipped}")
+        missing, _ = model.load_state_dict(filtered, strict=False)
+        trainable = {n for n, _ in model.named_parameters()}
+        missing_trained = [k for k in missing if k in trainable]
+        if missing_trained:
+            print(f"  WARNING: missing trained params: {missing_trained}")
+    elif base_ckpt is not None and resume_path is not None:
+        print("  Base checkpoint found but resume takes priority — skipping base weights.")
+    else:
+        print("  No base checkpoint — resume checkpoint will supply all weights.")
+
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Parameters: {n_params:,}  ({n_params/1e6:.1f}M)  vocab={cfg.vocab_size:,}")
+
+    # ── Phase step totals ─────────────────────────────────────
+    p1_total = args.phase1_steps
+    p2_total = p1_total + args.phase2_steps
+    p3_total = p2_total + args.phase3_steps
+    p4_total = p3_total + args.phase4_steps
+    p5_total = p4_total + args.phase5_steps
+
+    # ── Optimizer ─────────────────────────────────────────────
+    optimizer = AdamW(
+        model.parameters(),
+        lr=args.lr,
+        betas=(0.9, 0.95),
+        weight_decay=0.1,
+        eps=1e-8,
+    )
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lambda step: lr_lambda(step, args.warmup_steps, p5_total),
+    )
+
+    # ── Resume ────────────────────────────────────────────────
+    step = 0
+    if resume_path:
+        step = load_checkpoint(resume_path, model, optimizer, scheduler,
+                               allow_unsafe=args.allow_unsafe_checkpoint)
+
+    # ── torch.compile (after all checkpoint loading) ──────────
+    if args.compile:
+        print("Compiling model with torch.compile() …")
+        try:
+            model = torch.compile(model)
+        except Exception as e:
+            print(f"  torch.compile() failed ({e}); continuing without compile.")
+
+    last_scaler = None  # tracks scaler from the last run_phase for final.pt
+
+    # ── Phase 1: WikiText-103 ─────────────────────────────────
+    if args.phase in (0, 1) and step < p1_total:
+        print("\n[Phase 1] Building WikiText-103 dataset …")
+        ds1 = build_wikitext103(cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir)
+        step, last_scaler = run_phase(
+            phase_name="Phase1-WikiText103",
+            dataset=ds1,
+            model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
+            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p1_total,
+            phase_final_name="phase1_final.pt", device=device, amp_dtype=amp_dtype,
+            phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
+            phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
+            phase5_steps=args.phase5_steps, resume_path=resume_path,
+        )
+
+    # ── Phase 2: Reasoning mix (OpenWebMath + Orca Math [+ Dolly]) ──────────
+    if args.phase in (0, 2) and step < p2_total:
+        print("\n[Phase 2] Building reasoning mix dataset "
+              f"(OpenWebMath + Orca Math{' + Dolly' if args.include_dolly else ''}) …")
+        ds2 = build_reasoning_mix(
+            cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+            openwebmath_rows=args.phase2_openwebmath_rows,
+            orca_ratio=args.phase2_orca_ratio,
+            include_dolly=args.include_dolly,
+            dolly_rows=args.phase2_dolly_rows,
+        )
+        step, last_scaler = run_phase(
+            phase_name="Phase2-ReasoningMix",
+            dataset=ds2,
+            model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
+            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p2_total,
+            phase_final_name="phase2_final.pt", device=device, amp_dtype=amp_dtype,
+            phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
+            phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
+            phase5_steps=args.phase5_steps, resume_path=resume_path,
+        )
+
+    # ── Phase 3: Finance domain mix (financial-news + finance-alpaca) ───────
+    if args.phase in (0, 3) and step < p3_total:
+        print("\n[Phase 3] Building finance domain mix dataset (news + alpaca) …")
+        ds3 = build_finance_domain_mix(cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir)
+        step, last_scaler = run_phase(
+            phase_name="Phase3-FinanceDomain",
+            dataset=ds3,
+            model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
+            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p3_total,
+            phase_final_name="phase3_final.pt", device=device, amp_dtype=amp_dtype,
+            phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
+            phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
+            phase5_steps=args.phase5_steps, resume_path=resume_path,
+        )
+
+    # ── Phase 4: Trading methodology SFT (forecaster + sentiment) ─
+    if args.phase in (0, 4) and step < p4_total:
+        print("\n[Phase 4] Building trading methodology dataset (forecaster + sentiment) …")
+        ds4 = build_trading_methodology_sft(cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir)
+        step, last_scaler = run_phase(
+            phase_name="Phase4-TradingMethodology",
+            dataset=ds4,
+            model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
+            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p4_total,
+            phase_final_name="phase4_final.pt", device=device, amp_dtype=amp_dtype,
+            phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
+            phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
+            phase5_steps=args.phase5_steps, resume_path=resume_path,
+        )
+
+    # ── Phase 5: Trading discipline / risk-management QA ─────────
+    if args.phase in (0, 5) and step < p5_total:
+        print("\n[Phase 5] Building trading risk-management QA dataset …")
+        ds5 = build_trading_qa(cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir)
+        step, last_scaler = run_phase(
+            phase_name="Phase5-TradingQA",
+            dataset=ds5,
+            model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
+            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p5_total,
+            phase_final_name="phase5_final.pt", device=device, amp_dtype=amp_dtype,
+            phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
+            phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
+            phase5_steps=args.phase5_steps, resume_path=resume_path,
+        )
+
+    # ── Final checkpoint ──────────────────────────────────────
+    final_path = ckpt_dir / "final.pt"
+    save_checkpoint(
+        final_path, step, model, optimizer, scheduler, cfg, tag="finance_final",
+        phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
+        phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
+        phase5_steps=args.phase5_steps, scaler=last_scaler,
+    )
+    print(f"All done. Final model: {final_path}")
+    tee.close()
+
+
+# ──────────────────────────────────────────────────────────────
+# CLI
+# ──────────────────────────────────────────────────────────────
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="5-phase finance pretraining: WikiText-103 → reasoning mix → finance domain → trading methodology → risk-management QA"
+    )
+    # Phase control
+    p.add_argument("--phase",         type=int,   default=0,
+                   choices=[0, 1, 2, 3, 4, 5],
+                   help="0=all phases, 1=WikiText-103, 2=reasoning mix (OpenWebMath+OrcaMath+Dolly), "
+                        "3=finance domain (news+alpaca), 4=trading methodology (forecaster+sentiment), "
+                        "5=risk-management QA (final calibration)")
+    p.add_argument("--phase1_steps",  type=int,   default=20_000,
+                   help="Steps for phase 1 (WikiText-103 general fluency)")
+    p.add_argument("--phase2_steps",  type=int,   default=8_000,
+                   help="Steps for phase 2 (reasoning mix: OpenWebMath + Orca Math [+ Dolly])")
+    p.add_argument("--phase2_openwebmath_rows", type=int, default=80_000,
+                   help="OpenWebMath rows to stream for Phase 2 (full dataset = 6.3B tokens)")
+    p.add_argument("--phase2_orca_ratio", type=float, default=35.0,
+                   help="Orca Math rows as %% of openwebmath_rows (default 35 → ~47K rows)")
+    p.add_argument("--include_dolly",  action="store_true",
+                   help="Include databricks-dolly-15k in Phase 2 reasoning mix. "
+                        "License: CC BY-SA 3.0 — enable only when compatible with your use-case.")
+    p.add_argument("--phase2_dolly_rows", type=int, default=15_000,
+                   help="Dolly rows cap when --include_dolly is set (default 15000)")
+    p.add_argument("--phase3_steps",  type=int,   default=8_000,
+                   help="Steps for phase 3 (finance domain: financial-news + finance-alpaca plain text)")
+    p.add_argument("--phase4_steps",  type=int,   default=3_000,
+                   help="Steps for phase 4 (trading methodology: forecaster-dow30 ~1.2K + sentiment ~76K SFT)")
+    p.add_argument("--phase5_steps",  type=int,   default=3_000,
+                   help="Steps for phase 5 (trading discipline / risk-management QA — final calibration)")
+
+    # Data / model
+    p.add_argument("--base_ckpt",     type=str,
+                   default="checkpoints/a100_v2_gpt2vocab/final.pt",
+                   help="Starting checkpoint (model config + weights)")
+    p.add_argument("--seq_len",       type=int,   default=1024,
+                   help="Sequence length (longer = richer context, more RAM)")
+    p.add_argument("--batch_size",    type=int,   default=4,
+                   help="Micro-batch size per accumulation step")
+    p.add_argument("--grad_accum_steps", type=int, default=1,
+                   help="Gradient accumulation steps. Effective batch = batch_size × grad_accum_steps")
+    p.add_argument("--cache_dir",     type=str,   default=".cache",
+                   help="Directory for cached tokenised tensors")
+    p.add_argument("--ckpt_dir",      type=str,   default="checkpoints/finance_a100_v2",
+                   help="Output checkpoint directory")
+    p.add_argument("--allow_unsafe_checkpoint", action="store_true",
+                   help="Allow weights_only=False when loading checkpoints (pickle-based; "
+                        "only use with checkpoints you created yourself)")
+
+    # Optimiser
+    p.add_argument("--lr",            type=float, default=1e-4,
+                   help="Peak learning rate (lower than from-scratch to avoid forgetting)")
+    p.add_argument("--warmup_steps",  type=int,   default=200,
+                   help="LR warm-up steps")
+    p.add_argument("--grad_clip",     type=float, default=1.0,
+                   help="Gradient clipping norm")
+
+    # Logging / checkpointing
+    p.add_argument("--log_every",     type=int,   default=200,
+                   help="Log frequency (steps)")
+    p.add_argument("--save_every",    type=int,   default=2000,
+                   help="Checkpoint frequency (steps)")
+    p.add_argument("--log_file",      type=str,   default=None,
+                   help="Path for the training log file (default: <ckpt_dir>/train.log)")
+
+    # Resume
+    p.add_argument("--resume",        type=str,   default=None,
+                   help="Explicit checkpoint to resume from (overrides --auto_resume)")
+    p.add_argument("--auto_resume",   action="store_true",
+                   help="Auto-resume from latest step_*.pt in --ckpt_dir")
+
+    # GPU acceleration
+    p.add_argument("--dtype",         type=str,   default="auto",
+                   choices=["auto", "float32", "float16", "bfloat16"],
+                   help="Training dtype: auto=bfloat16 on Ampere+(A100), float16 on older CUDA(T4), float32 on CPU/MPS")
+    p.add_argument("--compile",       action="store_true",
+                   help="Apply torch.compile() for ~20-40%% additional GPU speedup (first step takes ~60s to compile)")
+    p.add_argument("--grad_checkpoint", action="store_true",
+                   help="Enable gradient checkpointing in the recurrent loop. "
+                        "Reduces VRAM ~proportionally to loop depth (e.g. 7x for 8 loops) "
+                        "at the cost of ~30-40%% extra compute. Recommended when OOM.")
+
+    args = p.parse_args()
+    if args.grad_accum_steps < 1:
+        p.error(f"--grad_accum_steps must be >= 1 (got {args.grad_accum_steps})")
+    return args
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    train(args)
