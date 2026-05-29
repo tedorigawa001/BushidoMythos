@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">BushidoMythos Warlord Banner</title>
+  <desc id="desc">A dramatic samurai warlord banner for BushidoMythos with a Hinomaru sun, armor silhouette, katana arcs, and market-chart motifs.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#05070B"/>
+      <stop offset="0.48" stop-color="#101827"/>
+      <stop offset="1" stop-color="#020304"/>
+    </linearGradient>
+
+    <radialGradient id="spot" cx="40%" cy="38%" r="65%">
+      <stop offset="0" stop-color="#334155" stop-opacity="0.85"/>
+      <stop offset="0.52" stop-color="#111827" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#020304" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="sunGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#FF4B3E" stop-opacity="1"/>
+      <stop offset="0.58" stop-color="#C8102E" stop-opacity="0.94"/>
+      <stop offset="1" stop-color="#C8102E" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF3B0"/>
+      <stop offset="0.42" stop-color="#C99A36"/>
+      <stop offset="0.72" stop-color="#7A5018"/>
+      <stop offset="1" stop-color="#F8D477"/>
+    </linearGradient>
+
+    <linearGradient id="armor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A3443"/>
+      <stop offset="0.45" stop-color="#111827"/>
+      <stop offset="1" stop-color="#05070B"/>
+    </linearGradient>
+
+    <linearGradient id="blade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#64748B" stop-opacity="0.12"/>
+      <stop offset="0.42" stop-color="#F8FAFC" stop-opacity="0.9"/>
+      <stop offset="0.62" stop-color="#94A3B8" stop-opacity="0.58"/>
+      <stop offset="1" stop-color="#CBD5E1" stop-opacity="0.08"/>
+    </linearGradient>
+
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#FFFFFF" stroke-opacity="0.045" stroke-width="1"/>
+    </pattern>
+
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.58"/>
+    </filter>
+
+    <filter id="glowRed" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="glowGold" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <clipPath id="frame">
+      <rect x="0" y="0" width="1200" height="420" rx="30" ry="30"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1200" height="420" fill="url(#bg)"/>
+    <rect width="1200" height="420" fill="url(#spot)"/>
+    <rect width="1200" height="420" fill="url(#grid)"/>
+
+    <path d="M-60 312C95 268 216 292 374 230C530 169 683 80 860 118C1004 149 1106 105 1268 52"
+          fill="none" stroke="#FFFFFF" stroke-opacity="0.065" stroke-width="2"/>
+    <path d="M690 302L744 268L797 278L846 222L901 239L950 173L1001 191L1072 108"
+          fill="none" stroke="#F8D477" stroke-opacity="0.48" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <g fill="#F8D477" opacity="0.82">
+      <circle cx="744" cy="268" r="5"/>
+      <circle cx="846" cy="222" r="5"/>
+      <circle cx="950" cy="173" r="5"/>
+      <circle cx="1072" cy="108" r="5"/>
+    </g>
+
+    <g transform="translate(92 30)" opacity="0.78">
+      <circle cx="174" cy="174" r="124" fill="#F8FAFC"/>
+      <circle cx="174" cy="174" r="82" fill="#C8102E"/>
+      <circle cx="174" cy="174" r="100" fill="url(#sunGlow)" filter="url(#glowRed)"/>
+    </g>
+
+    <g transform="translate(86 46)" filter="url(#shadow)">
+      <path d="M70 298C103 222 157 184 227 184C297 184 352 222 386 298Z" fill="url(#armor)" stroke="#3B4658" stroke-width="2"/>
+      <path d="M102 296L134 228H320L352 296Z" fill="#0B0F17" stroke="#C99A36" stroke-opacity="0.65" stroke-width="2"/>
+      <path d="M132 252H322M116 278H338" stroke="#F8D477" stroke-opacity="0.35" stroke-width="3"/>
+
+      <path d="M118 150C122 78 173 34 228 34C283 34 334 78 338 150C312 129 285 119 228 119C171 119 144 129 118 150Z"
+            fill="url(#armor)" stroke="#D9B35F" stroke-width="3"/>
+      <path d="M126 151C156 136 186 130 228 130C270 130 300 136 330 151L316 188C287 174 262 168 228 168C194 168 169 174 140 188Z"
+            fill="#0A0E15" stroke="#C99A36" stroke-opacity="0.8" stroke-width="2"/>
+
+      <path d="M228 35C198 8 160 4 126 19C151 35 178 49 199 75"
+            fill="none" stroke="url(#gold)" stroke-width="12" stroke-linecap="round"/>
+      <path d="M228 35C258 8 296 4 330 19C305 35 278 49 257 75"
+            fill="none" stroke="url(#gold)" stroke-width="12" stroke-linecap="round"/>
+      <path d="M228 18L214 86H242Z" fill="url(#gold)" stroke="#FFF3B0" stroke-opacity="0.75" stroke-width="1.5" filter="url(#glowGold)"/>
+
+      <path d="M147 188C166 156 193 144 228 144C263 144 290 156 309 188L291 232C264 250 193 250 165 232Z"
+            fill="#111827" stroke="#64748B" stroke-width="2"/>
+      <path d="M172 191L208 204L171 211Z" fill="#F8D477"/>
+      <path d="M284 191L248 204L285 211Z" fill="#F8D477"/>
+      <path d="M188 234C205 248 251 248 268 234" fill="none" stroke="#C8102E" stroke-width="4" stroke-linecap="round"/>
+
+      <path d="M78 164L36 204L93 229M378 164L420 204L363 229" fill="none" stroke="#C99A36" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M82 197L38 247L105 270M374 197L418 247L351 270" fill="none" stroke="#C99A36" stroke-opacity="0.7" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <path d="M28 93C135 46 264 31 424 46" fill="none" stroke="url(#blade)" stroke-width="8" stroke-linecap="round"/>
+      <path d="M33 106C142 63 270 48 416 61" fill="none" stroke="#020304" stroke-opacity="0.78" stroke-width="3" stroke-linecap="round"/>
+    </g>
+
+    <g transform="translate(502 96)">
+      <text x="0" y="82"
+            font-family="Cinzel, Trajan Pro, Georgia, serif"
+            font-size="76"
+            font-weight="800"
+            letter-spacing="2"
+            fill="#F8FAFC">BUSHIDO</text>
+      <text x="2" y="148"
+            font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif"
+            font-size="57"
+            font-weight="750"
+            letter-spacing="1.5"
+            fill="url(#gold)">MYTHOS</text>
+      <rect x="4" y="170" width="556" height="3" fill="url(#gold)" opacity="0.9"/>
+      <text x="6" y="212"
+            font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif"
+            font-size="20"
+            font-weight="600"
+            letter-spacing="3.2"
+            fill="#CBD5E1">RECURRENT-DEPTH TRANSFORMER FOR TRADING</text>
+      <text x="7" y="246"
+            font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif"
+            font-size="15"
+            font-weight="600"
+            letter-spacing="2.2"
+            fill="#F8D477">DISCIPLINE · RISK · LATENT REASONING</text>
+    </g>
+
+    <g transform="translate(954 64)" opacity="0.68">
+      <path d="M0 225C54 153 116 83 210 24" fill="none" stroke="url(#blade)" stroke-width="5" stroke-linecap="round"/>
+      <path d="M24 244C91 183 156 116 238 64" fill="none" stroke="#C8102E" stroke-opacity="0.72" stroke-width="7" stroke-linecap="round"/>
+      <path d="M82 280L132 250L180 264L246 210" fill="none" stroke="#F8D477" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <rect x="0" y="0" width="1200" height="420" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="2"/>
+  </g>
+</svg>
