@@ -86,6 +86,40 @@ from bushido_mythos import MythosConfig, BushidoMythos
 
 
 # ──────────────────────────────────────────────────────────────
+# VRAM diagnostics
+# ──────────────────────────────────────────────────────────────
+
+def _vram_str(device: torch.device, reset_peak: bool = True) -> str:
+    """Return a formatted VRAM status string (empty string on non-CUDA devices).
+
+    Fields:
+      alloc    -- bytes currently held by live tensors
+      reserved -- bytes reserved from CUDA (alloc + allocator cache)
+      peak     -- max alloc since last reset (resets after each call when reset_peak=True)
+      frag     -- (reserved - alloc) / reserved  →  high = fragmentation or cached blocks
+
+    Diagnosis guide:
+      alloc grows steadily         → activations not freed; check grad-checkpoint
+      frag > 40% and rising        → allocator fragmentation; try PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      peak >> steady alloc         → transient spike (e.g. attention matrix); consider SDPA or seq-len reduction
+      reserved near GPU total      → OOM imminent; reduce batch or enable grad-checkpoint
+    """
+    if device.type != "cuda":
+        return ""
+    MB = 1024 ** 2
+    alloc    = torch.cuda.memory_allocated(device) / MB
+    reserved = torch.cuda.memory_reserved(device) / MB
+    peak     = torch.cuda.max_memory_allocated(device) / MB
+    frag     = (reserved - alloc) / reserved * 100 if reserved > 0 else 0.0
+    if reset_peak:
+        torch.cuda.reset_peak_memory_stats(device)
+    return (
+        f"alloc={alloc:.0f}MB  reserved={reserved:.0f}MB"
+        f"  peak={peak:.0f}MB  frag={frag:.0f}%"
+    )
+
+
+# ──────────────────────────────────────────────────────────────
 # Device
 # ──────────────────────────────────────────────────────────────
 
@@ -756,6 +790,11 @@ def run_phase(
     print(f"  log every {args.log_every}  save every {args.save_every}")
     print(f"{'='*60}\n")
 
+    # Reset peak memory stats at phase start so the first [VRAM] log reflects
+    # only training-time usage, not model load / compile / initialization peaks.
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+
     model.train()
     optimizer.zero_grad(set_to_none=True)
     micro_step = 0
@@ -832,6 +871,12 @@ def run_phase(
                 total_loss = total_ce = total_aux = 0.0
                 log_micros = 0
                 t0 = time.time()
+
+            mem_every = getattr(args, "mem_log_every", 100)
+            if mem_every > 0 and step % mem_every == 0:
+                vram = _vram_str(device, reset_peak=True)
+                if vram:
+                    print(f"[VRAM] step {step:6d}  {vram}")
 
             if step % args.save_every == 0:
                 save_checkpoint(
@@ -1121,6 +1166,8 @@ def parse_args() -> argparse.Namespace:
                    help="Gradient clipping norm")
 
     # Logging / checkpointing
+    p.add_argument("--mem_log_every", type=int,   default=100,
+                   help="Log VRAM stats (alloc/reserved/peak/frag) every N steps. 0 = disable.")
     p.add_argument("--log_every",     type=int,   default=200,
                    help="Log frequency (steps)")
     p.add_argument("--save_every",    type=int,   default=2000,

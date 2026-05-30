@@ -389,10 +389,37 @@ python training/finance_pretrain.py \
 | `--seq_len` | `1024` | Sequence length |
 | `--dtype` | `auto` | `auto` = bfloat16 on Ampere+ (A100), float16 on T4/V100, float32 on CPU/MPS |
 | `--compile` | `False` | Uses `torch.compile()` for roughly 20-40% speedup on Ampere+; unsupported environments are skipped automatically |
+| `--grad_checkpoint` | `False` | Enable gradient checkpointing in the recurrent loop. Reduces activation memory in proportion to loop depth (larger effect with more loops) at the cost of ~30-40% extra compute |
+| `--mem_log_every` | `100` | Log VRAM stats (`alloc` / `reserved` / `peak` / `frag`) every N steps. Helps diagnose OOM root cause. `0` = disable |
 | `--lr` | `1e-4` | Peak learning rate |
 | `--save_every` | `2000` | Checkpoint interval in steps |
 
 Checkpoints save `scheduler_state`, `scaler_state` for float16 training, and phase metadata, so interrupted runs can resume with the same schedule. A phase is skipped automatically if the current step has already passed its endpoint.
+
+**VRAM diagnostics (`--mem_log_every`):**
+
+Every `--mem_log_every` steps the training log prints a `[VRAM]` line:
+
+```
+[VRAM] step    100  alloc=3420MB  reserved=5120MB  peak=4890MB  frag=33%
+```
+
+| Field | Meaning | High value indicates |
+|---|---|---|
+| `alloc` | Bytes held by live tensors | — |
+| `reserved` | Bytes reserved from CUDA allocator (alloc + cache) | — |
+| `peak` | Max alloc since last reset (resets each interval) | Transient spike — attention matrix or large intermediate |
+| `frag` | `(reserved − alloc) / reserved` | Allocator fragmentation; try `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` |
+
+OOM root-cause guide:
+
+| Pattern | Likely cause | Remedy |
+|---|---|---|
+| `alloc` grows steadily | Activations not freed | `--grad_checkpoint` |
+| `frag` > 40% and rising | Allocator fragmentation | `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` |
+| `peak` >> steady `alloc` | Attention matrix spike | SDPA / reduce `--seq_len` |
+| `reserved` near GPU total | OOM imminent | Reduce `--batch_size` or enable `--grad_checkpoint` |
+| All stats stable, yet slow | Drive I/O bottleneck | `--cache_dir /content/cache` |
 
 **Training loss curve (A100, 52,000 steps, 5 phases):**
 
