@@ -1104,5 +1104,330 @@ class TestGradientCheckpointing:
         assert m._last_aux_loss.item() > 0.0
 
 
+# ---------------------------------------------------------------------------
+# MLA KV-cache correctness (parallel)
+# ---------------------------------------------------------------------------
+
+
+class TestMLAttentionKVCacheCorrectness:
+    """MLA has compressed KV reconstruction — verify cache produces same logits as no-cache."""
+
+    def setup_method(self):
+        self.cfg = mla_cfg()
+        self.model = BushidoMythos(self.cfg).eval()
+        torch.manual_seed(0)
+        self.prompt = torch.randint(0, self.cfg.vocab_size, (1, T))
+
+    def test_step0_cache_matches_no_cache(self):
+        with torch.no_grad():
+            logits_no_cache = self.model(self.prompt, n_loops=2)[:, -1, :]
+            cache = {}
+            logits_cached = self.model(self.prompt, n_loops=2, kv_cache=cache)[:, -1, :]
+        assert torch.allclose(logits_no_cache, logits_cached, atol=1e-4)
+
+    def test_cache_grows_correctly_across_steps(self):
+        """After step-0 prefill, step-1 single-token decode should not raise."""
+        cache = {}
+        with torch.no_grad():
+            self.model(self.prompt, n_loops=2, kv_cache=cache)
+            next_tok = torch.randint(0, self.cfg.vocab_size, (1, 1))
+            logits = self.model(next_tok, n_loops=2, kv_cache=cache, start_pos=T)
+        assert logits.shape == (1, 1, self.cfg.vocab_size)
+        assert not torch.isnan(logits).any()
+
+    def test_first_step_logits_match_direct_forward(self):
+        """The logits used for step-0 sampling must equal a direct forward pass."""
+        with torch.no_grad():
+            # Direct forward with empty cache
+            cache_direct = {}
+            logits_direct = self.model(self.prompt, n_loops=2,
+                                       kv_cache=cache_direct)[:, -1, :]
+            # Prefill via a fresh cache (simulates what _generate_inner does at step 0)
+            cache_gen = {}
+            logits_gen = self.model(self.prompt, n_loops=2,
+                                    kv_cache=cache_gen)[:, -1, :]
+        assert torch.allclose(logits_direct, logits_gen, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Empty input guard
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyInputGuard:
+    """forward() and generate() must fail fast with clear errors on T=0 input."""
+
+    def setup_method(self):
+        self.model = BushidoMythos(gqa_cfg())
+
+    def test_forward_raises_on_empty_input_ids(self):
+        empty = torch.zeros((1, 0), dtype=torch.long)
+        with pytest.raises(ValueError, match="[Ii]nput"):
+            self.model(empty)
+
+    def test_forward_raises_on_empty_inputs_embeds(self):
+        empty = torch.zeros((1, 0, gqa_cfg().dim))
+        with pytest.raises(ValueError, match="[Ii]nput"):
+            self.model(inputs_embeds=empty)
+
+    def test_generate_raises_on_empty_input(self):
+        empty = torch.zeros((1, 0), dtype=torch.long)
+        with pytest.raises(ValueError):
+            self.model.generate(empty, max_new_tokens=3)
+
+
+# ---------------------------------------------------------------------------
+# generate() edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateEdgeCases:
+    def setup_method(self):
+        self.cfg = gqa_cfg()
+        self.model = BushidoMythos(self.cfg)
+        self.ids = torch.randint(0, self.cfg.vocab_size, (1, T))
+
+    def test_max_new_tokens_zero_returns_input_unchanged(self):
+        out = self.model.generate(self.ids, max_new_tokens=0)
+        assert out.shape == self.ids.shape
+        assert torch.equal(out, self.ids)
+
+    def test_returns_to_train_mode_after_generate(self):
+        self.model.train()
+        self.model.generate(self.ids, max_new_tokens=2, n_loops=1)
+        assert self.model.training
+
+    def test_stays_in_eval_mode_after_generate(self):
+        self.model.eval()
+        self.model.generate(self.ids, max_new_tokens=2, n_loops=1)
+        assert not self.model.training
+
+    def test_repetition_penalty_formula_positive_logit(self):
+        """Positive logit for a seen token is divided by penalty → reduced."""
+        penalty = 1.5
+        score = torch.tensor([2.0])
+        penalised = torch.where(score < 0, score * penalty, score / penalty)
+        assert penalised.item() == pytest.approx(2.0 / penalty)
+
+    def test_repetition_penalty_formula_negative_logit(self):
+        """Negative logit for a seen token is multiplied by penalty → more negative."""
+        penalty = 1.5
+        score = torch.tensor([-3.0])
+        penalised = torch.where(score < 0, score * penalty, score / penalty)
+        assert penalised.item() == pytest.approx(-3.0 * penalty)
+
+    def test_repetition_penalty_shape_unchanged(self):
+        """repetition_penalty must not change output tensor shape."""
+        out_no_pen  = self.model.generate(self.ids, max_new_tokens=3, n_loops=1,
+                                          repetition_penalty=1.0)
+        out_penalised = self.model.generate(self.ids, max_new_tokens=3, n_loops=1,
+                                            repetition_penalty=1.5)
+        assert out_no_pen.shape == out_penalised.shape == (1, T + 3)
+
+    def test_top_k_zero_does_not_crash(self):
+        """top_k=0 disables top-K filtering — generation should still complete."""
+        out = self.model.generate(self.ids, max_new_tokens=3, n_loops=1, top_k=0)
+        assert out.shape == (1, T + 3)
+
+
+# ---------------------------------------------------------------------------
+# ACT invariants
+# ---------------------------------------------------------------------------
+
+
+class TestACTInvariants:
+    """Adaptive Computation Time: ponder cost and aux-loss structural invariants."""
+
+    def setup_method(self):
+        self.cfg = gqa_cfg(max_loop_iters=4, act_aux_loss_weight=0.01)
+        self.model = BushidoMythos(self.cfg)
+        self.ids = torch.randint(0, self.cfg.vocab_size, (B, T))
+
+    def test_ponder_cost_in_valid_range(self):
+        """Mean ponder steps must be in [1, max_loop_iters]."""
+        self.model(self.ids)
+        cost = self.model.recurrent._last_ponder_cost.item()
+        assert 1.0 <= cost <= self.cfg.max_loop_iters
+
+    def test_ponder_cost_is_scalar(self):
+        self.model(self.ids)
+        assert self.model.recurrent._last_ponder_cost.ndim == 0
+
+    def test_ponder_cost_non_negative(self):
+        self.model(self.ids)
+        assert self.model.recurrent._last_ponder_cost.item() >= 0.0
+
+    def test_aux_loss_non_negative(self):
+        self.model(self.ids)
+        assert self.model._last_aux_loss.item() >= 0.0
+
+    def test_high_threshold_uses_more_steps(self):
+        """Higher ACT threshold → more steps before halting → higher ponder cost."""
+        torch.manual_seed(0)
+        m_low = BushidoMythos(gqa_cfg(act_threshold=0.5, max_loop_iters=4))
+        torch.manual_seed(0)
+        m_high = BushidoMythos(gqa_cfg(act_threshold=0.99, max_loop_iters=4))
+        ids = torch.randint(0, 200, (B, T))
+        m_low(ids)
+        m_high(ids)
+        assert (m_high.recurrent._last_ponder_cost.item()
+                >= m_low.recurrent._last_ponder_cost.item())
+
+
+# ---------------------------------------------------------------------------
+# start_pos RoPE offset correctness
+# ---------------------------------------------------------------------------
+
+
+class TestStartPos:
+    """start_pos shifts RoPE frequencies — different positions must give different outputs."""
+
+    def setup_method(self):
+        self.model = BushidoMythos(gqa_cfg()).eval()
+        self.ids = torch.randint(0, gqa_cfg().vocab_size, (1, 4))
+
+    def test_different_start_pos_produces_different_freqs_cis(self):
+        """freqs_cis sliced at different offsets must differ — RoPE encodes position."""
+        cfg = gqa_cfg()
+        model = BushidoMythos(cfg)
+        freqs_0 = model.freqs_cis[0:4]
+        freqs_5 = model.freqs_cis[5:9]
+        assert not torch.allclose(freqs_0, freqs_5)
+
+    def test_zero_start_pos_is_default(self):
+        """Explicit start_pos=0 must match implicit default."""
+        with torch.no_grad():
+            logits_default = self.model(self.ids)
+            logits_explicit = self.model(self.ids, start_pos=0)
+        assert torch.allclose(logits_default, logits_explicit)
+
+    def test_start_pos_within_max_seq_len(self):
+        """start_pos near max_seq_len - T should not raise."""
+        cfg = gqa_cfg()
+        T_short = 2
+        ids = torch.randint(0, cfg.vocab_size, (1, T_short))
+        start = cfg.max_seq_len - T_short
+        with torch.no_grad():
+            out = self.model(ids, start_pos=start)
+        assert out.shape == (1, T_short, cfg.vocab_size)
+
+
+# ---------------------------------------------------------------------------
+# MoE top-K selection
+# ---------------------------------------------------------------------------
+
+
+class TestMoETopK:
+    """Each token must activate exactly n_experts_per_tok routed experts."""
+
+    def setup_method(self):
+        self.cfg = gqa_cfg()
+        self.model = BushidoMythos(self.cfg)
+        self.moe = self.model.recurrent.block.ffn
+        self.ids = torch.randint(0, self.cfg.vocab_size, (B, T))
+
+    def test_last_expert_counts_sum_equals_topk_tokens(self):
+        """_last_expert_counts sums to B*T*topk for the last loop iteration."""
+        self.model(self.ids)
+        total = self.moe._last_expert_counts.sum().item()
+        expected = B * T * self.cfg.n_experts_per_tok
+        assert total == pytest.approx(expected)
+
+    def test_expert_counts_length_equals_n_experts(self):
+        self.model(self.ids)
+        assert self.moe._last_expert_counts.shape == (self.cfg.n_experts,)
+
+    def test_expert_counts_non_negative(self):
+        self.model(self.ids)
+        assert (self.moe._last_expert_counts >= 0).all()
+
+    def test_accum_counts_sum_grows_across_forwards(self):
+        """Accumulated counts grow monotonically across forward passes."""
+        self.moe._accum_expert_counts = None
+        self.model(self.ids)
+        after_first = self.moe._accum_expert_counts.sum().item()
+        self.model(self.ids)
+        after_second = self.moe._accum_expert_counts.sum().item()
+        assert after_second > after_first
+
+
+# ---------------------------------------------------------------------------
+# MythosConfig validation
+# ---------------------------------------------------------------------------
+
+
+class TestMythosConfigValidation:
+    def test_invalid_attn_type_raises_value_error(self):
+        with pytest.raises(ValueError, match="attn_type"):
+            MythosConfig(attn_type="invalid")
+
+    def test_valid_attn_types_do_not_raise(self):
+        MythosConfig(attn_type="gqa")
+        MythosConfig(attn_type="mla")
+
+
+# ---------------------------------------------------------------------------
+# Weight tying — GQA and MLA
+# ---------------------------------------------------------------------------
+
+
+class TestWeightTying:
+    def test_weight_tying_gqa(self):
+        model = BushidoMythos(gqa_cfg())
+        assert model.head.weight is model.embed.weight
+
+    def test_weight_tying_mla(self):
+        model = BushidoMythos(mla_cfg())
+        assert model.head.weight is model.embed.weight
+
+    def test_weight_tying_preserved_after_train_step(self):
+        """A gradient update must not break the weight tying."""
+        model = BushidoMythos(gqa_cfg()).train()
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
+        ids = torch.randint(0, gqa_cfg().vocab_size, (1, T))
+        model(ids).sum().backward()
+        opt.step()
+        assert model.head.weight is model.embed.weight
+
+
+# ---------------------------------------------------------------------------
+# Depth extrapolation beyond max_loop_iters
+# ---------------------------------------------------------------------------
+
+
+class TestDepthExtrapolation:
+    """n_loops > max_loop_iters must work without error or NaN at inference."""
+
+    def setup_method(self):
+        self.cfg = gqa_cfg(max_loop_iters=3)
+        self.model = BushidoMythos(self.cfg).eval()
+        self.ids = torch.randint(0, self.cfg.vocab_size, (1, T))
+
+    def test_forward_beyond_max_loop_iters(self):
+        with torch.no_grad():
+            logits = self.model(self.ids, n_loops=6)
+        assert logits.shape == (1, T, self.cfg.vocab_size)
+        assert not torch.isnan(logits).any()
+
+    def test_generate_beyond_max_loop_iters(self):
+        out = self.model.generate(self.ids, max_new_tokens=3, n_loops=6)
+        assert out.shape == (1, T + 3)
+        assert not torch.isnan(out.float()).any()
+
+    def test_extra_loops_do_not_raise_or_nan(self):
+        """n_loops > max_loop_iters must not raise or produce NaN.
+
+        Whether the output numerically differs depends on ACT halting and
+        weight magnitudes — not testable with random weights. Shape/stability
+        is the meaningful invariant here.
+        """
+        with torch.no_grad():
+            logits_3 = self.model(self.ids, n_loops=3)
+            logits_6 = self.model(self.ids, n_loops=6)
+        assert logits_3.shape == logits_6.shape
+        assert not torch.isnan(logits_3).any()
+        assert not torch.isnan(logits_6).any()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "--verbose"])

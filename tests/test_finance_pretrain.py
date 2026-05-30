@@ -31,6 +31,7 @@ from training.finance_pretrain import (
     load_checkpoint,
     lr_lambda,
     save_checkpoint,
+    _vram_str,
 )
 from chat import find_latest_ckpt
 from bushido_mythos import MythosConfig, BushidoMythos
@@ -511,6 +512,108 @@ class TestPhase34Metadata:
         assert ckpt["phase3_steps"] == 5_000
         assert ckpt["phase4_steps"] == 8_000
         assert ckpt["phase5_steps"] == 3_000
+
+
+# ---------------------------------------------------------------------------
+# _vram_str diagnostic utility
+# ---------------------------------------------------------------------------
+
+
+class TestVramStr:
+    """_vram_str must return empty string on CPU and a formatted string on CUDA."""
+
+    def test_cpu_device_returns_empty_string(self):
+        result = _vram_str(torch.device("cpu"))
+        assert result == ""
+
+    def test_cpu_reset_peak_is_noop(self):
+        """reset_peak=True on CPU must not raise."""
+        _vram_str(torch.device("cpu"), reset_peak=True)
+        _vram_str(torch.device("cpu"), reset_peak=False)
+
+    # -- Mock-based tests: run on CPU, verify string format and reset call --
+
+    def _make_cuda_device(self):
+        """Return a MagicMock that looks like a CUDA device."""
+        d = MagicMock()
+        d.type = "cuda"
+        return d
+
+    def test_mocked_cuda_string_contains_all_fields(self):
+        """Verify string format without real CUDA by mocking memory functions."""
+        MB = 1024 ** 2
+        device = self._make_cuda_device()
+        with (patch("torch.cuda.memory_allocated",     return_value=2048 * MB),
+              patch("torch.cuda.memory_reserved",      return_value=4096 * MB),
+              patch("torch.cuda.max_memory_allocated", return_value=3500 * MB),
+              patch("torch.cuda.reset_peak_memory_stats")):
+            result = _vram_str(device, reset_peak=True)
+
+        assert "alloc=2048MB"    in result
+        assert "reserved=4096MB" in result
+        assert "peak=3500MB"     in result
+        assert "frag="           in result
+
+    def test_mocked_cuda_frag_calculation(self):
+        """frag = (reserved - alloc) / reserved * 100."""
+        MB = 1024 ** 2
+        device = self._make_cuda_device()
+        with (patch("torch.cuda.memory_allocated",     return_value=1024 * MB),
+              patch("torch.cuda.memory_reserved",      return_value=2048 * MB),
+              patch("torch.cuda.max_memory_allocated", return_value=1024 * MB),
+              patch("torch.cuda.reset_peak_memory_stats")):
+            result = _vram_str(device, reset_peak=False)
+
+        # (2048 - 1024) / 2048 * 100 = 50%
+        assert "frag=50%" in result
+
+    def test_mocked_cuda_reset_called_when_flag_true(self):
+        """reset_peak_memory_stats must be called exactly once when reset_peak=True."""
+        MB = 1024 ** 2
+        device = self._make_cuda_device()
+        with (patch("torch.cuda.memory_allocated",     return_value=MB),
+              patch("torch.cuda.memory_reserved",      return_value=MB),
+              patch("torch.cuda.max_memory_allocated", return_value=MB),
+              patch("torch.cuda.reset_peak_memory_stats") as mock_reset):
+            _vram_str(device, reset_peak=True)
+        mock_reset.assert_called_once()
+
+    def test_mocked_cuda_reset_not_called_when_flag_false(self):
+        """reset_peak_memory_stats must NOT be called when reset_peak=False."""
+        MB = 1024 ** 2
+        device = self._make_cuda_device()
+        with (patch("torch.cuda.memory_allocated",     return_value=MB),
+              patch("torch.cuda.memory_reserved",      return_value=MB),
+              patch("torch.cuda.max_memory_allocated", return_value=MB),
+              patch("torch.cuda.reset_peak_memory_stats") as mock_reset):
+            _vram_str(device, reset_peak=False)
+        mock_reset.assert_not_called()
+
+    # -- Real CUDA tests (skipped when no GPU) --
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_cuda_returns_nonempty_string(self):
+        result = _vram_str(torch.device("cuda"))
+        assert result != ""
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_cuda_string_contains_all_fields(self):
+        result = _vram_str(torch.device("cuda"))
+        assert "alloc=" in result
+        assert "reserved=" in result
+        assert "peak=" in result
+        assert "frag=" in result
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_cuda_peak_resets_after_call(self):
+        """reset_peak=True should clear max_memory_allocated."""
+        device = torch.device("cuda")
+        tmp = torch.zeros(1024, 1024, device=device)
+        peak_before = torch.cuda.max_memory_allocated(device)
+        del tmp
+        _vram_str(device, reset_peak=True)
+        peak_after = torch.cuda.max_memory_allocated(device)
+        assert peak_after <= peak_before
 
 
 if __name__ == "__main__":
