@@ -535,6 +535,92 @@ If the prompt exceeds `max_seq_len - max_tokens`, the left side is truncated and
 
 ---
 
+## Perplexity Evaluation
+
+[`training/eval_perplexity.py`](training/eval_perplexity.py) measures WikiText-103 perplexity (PPL) and prints it next to public GPT-2 baselines (GPT-2 small/medium/large/XL).
+
+```bash
+# Evaluate a single checkpoint (auto-selects the most-trained one in --ckpt_dir)
+python3.9 training/eval_perplexity.py --ckpt_dir checkpoints/finance_a100_v2
+
+# Explicit checkpoint
+python3.9 training/eval_perplexity.py --ckpt checkpoints/finance_a100_v2/phase1_final.pt
+
+# Compare every phase checkpoint (phase1 → … → phase5 → final)
+python3.9 training/eval_perplexity.py --compare --ckpt_dir checkpoints/finance_a100_v2
+
+# Sliding-window PPL on the test split with bfloat16 autocast
+python3.9 training/eval_perplexity.py --ckpt <path> --split test --stride 512 --dtype bfloat16
+```
+
+When `--ckpt` is omitted, the script auto-selects the **most-trained** checkpoint in `--ckpt_dir`, in priority order `phase5_final.pt` → `phase4_final.pt` → `phase3_final.pt` → `phase2_final.pt` → `phase1_final.pt` → `final.pt`. (The `--compare` table instead lists checkpoints in training order, phase1 → final, to show the PPL progression.)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--ckpt` | auto | Checkpoint to evaluate; overrides auto-selection from `--ckpt_dir` |
+| `--ckpt_dir` | `checkpoints/finance_a100_v2` | Directory searched for checkpoints (auto-select and `--compare`) |
+| `--compare` | off | Evaluate every phase checkpoint and print a per-phase PPL bar chart |
+| `--split` | `validation` | WikiText-103 split: `validation` or `test` |
+| `--seq_len` | `1024` | Chunk size (must be `> 0`) |
+| `--stride` | `None` | `None` = non-overlapping chunks (fast); `int > 0` = sliding window (more accurate) |
+| `--n_loops` | `8` | Recurrent loop count at inference (must be `> 0`) |
+| `--dtype` | `auto` | `auto` (bfloat16 on Ampere+, float16 on older GPUs, float32 on CPU) / `float32` / `float16` / `bfloat16`; controls `torch.autocast` |
+| `--allow_unsafe_checkpoint` | off | See the security note below |
+
+Token IDs are clamped to `[0, cfg.vocab_size - 1]` before evaluation, matching the training and `chat.py` paths.
+
+> **Comparison caveat:** GPT-2 baselines are test-set PPL (Radford et al. 2019). Because tokenizer, stride, and preprocessing can differ, treat the comparison as a **rough reference, not strictly apples-to-apples**. Phase 1 trains on WikiText-103; Phase 2–5 fine-tuning may raise PPL on this general benchmark.
+
+> **Checkpoint loading security:** checkpoints are loaded with `weights_only=True` by default. If that fails (e.g. a legacy checkpoint with pickled objects), the script raises an error rather than silently falling back. Pass `--allow_unsafe_checkpoint` to permit a `weights_only=False` retry — only for checkpoints you trust, since `weights_only=False` can execute arbitrary code during unpickling.
+
+---
+
+## Behavioral Evaluation
+
+Perplexity does not tell you whether finance specialization actually changed the model's behavior. [`training/eval_finance_behavior.py`](training/eval_finance_behavior.py) compares checkpoints on a fixed prompt suite and reports three families of signal. It reuses `chat.py`'s generation, checkpoint loading, and tokenizer (including the `### Instruction: / ### Response:` formatting and `### ` stop boundary).
+
+```bash
+# Default: compare phase1_final vs phase5_final on the built-in 8-prompt suite
+python3.9 training/eval_finance_behavior.py
+
+# Deterministic, reproducible run (recommended for reported numbers)
+python3.9 training/eval_finance_behavior.py --device cpu
+
+# Custom checkpoints and prompts
+python3.9 training/eval_finance_behavior.py \
+  --ckpts checkpoints/finance_a100_v2/phase1_final.pt \
+          checkpoints/finance_a100_v2/phase5_final.pt \
+  --prompts "high leverage risk" "position sizing" "What is liquidity risk?" \
+  --max_tokens 96 --loops 8 --out training/report/finance_behavior_report.md
+```
+
+What it measures:
+
+| Axis | Metric | Meaning |
+|---|---|---|
+| **Fixed-prompt outputs** | side-by-side text | Qualitative comparison of what each checkpoint generates |
+| **Format adherence** | `### ` turn-boundary rate | Whether the model emits the trained instruction-turn boundary (true format adherence) |
+| | non-degenerate rate | Quality proxy: response has length and low repetition (*not* format adherence itself) |
+| | structured-reasoning rate | Proxy: presence of reasoning cues (`because`, `however`, `should`, …) or bullet structure |
+| **Risk-concept coverage** | per-concept % + avg concepts | Coverage of stop-loss, position sizing, leverage, liquidity, event risk, uncertainty |
+
+A Markdown report (per-prompt outputs + aggregate tables) is written to `--out` (default `training/report/`, parent directory auto-created).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--ckpts` | phase1 + phase5 | Checkpoints to compare (displayed in this order) |
+| `--prompts` | built-in 8 | Prompt suite; overrides the defaults |
+| `--device` | `auto` | `auto` / `cpu` / `mps` / `cuda`. See the reproducibility note below |
+| `--max_tokens` | `96` | Max generated tokens per prompt |
+| `--loops` | `8` | Recurrent loop count at inference |
+| `--temp` / `--top_k` / `--rep_penalty` | `0.7` / `40` / `1.3` | Sampling controls |
+| `--seed` | `0` | Seed applied before each generation |
+| `--out` | `training/report/finance_behavior_report.md` | Markdown report path (`""` disables) |
+
+> **Reproducibility:** on Apple MPS, sampling is **not reproducible across runs** even with a fixed seed (`torch.manual_seed` / `torch.mps.manual_seed` do not make `multinomial` deterministic in current PyTorch). The CPU RNG *is* deterministic, so use `--device cpu` for numbers you intend to report. Metrics also use keyword matching over a small prompt set — treat them as directional, not exact (mention ≠ correctness).
+
+---
+
 ## Documentation
 
 | Page | Content |
