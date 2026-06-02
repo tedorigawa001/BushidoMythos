@@ -1429,5 +1429,51 @@ class TestDepthExtrapolation:
         assert not torch.isnan(logits_6).any()
 
 
+class TestEOSStopping:
+    """generate() must stop early on eos_token_id and pad finished rows."""
+
+    EOS = 7
+
+    def _model_forcing(self, token_per_row):
+        """Tiny model whose forward forces argmax to a chosen token per batch row."""
+        cfg = gqa_cfg()
+        model = BushidoMythos(cfg)
+
+        def fake_forward(input_ids, n_loops=None, kv_cache=None, start_pos=0, **kw):
+            B, T = input_ids.shape
+            logits = torch.zeros(B, T, cfg.vocab_size)
+            for b in range(B):
+                logits[b, :, token_per_row[b % len(token_per_row)]] = 100.0
+            return logits
+
+        model.forward = fake_forward  # shadow the bound method
+        return model
+
+    def test_stops_before_max_new_tokens(self):
+        model = self._model_forcing([self.EOS])  # always emit EOS
+        prompt = torch.zeros(1, 3, dtype=torch.long)
+        out = model.generate(prompt, max_new_tokens=20, n_loops=2,
+                             top_k=1, eos_token_id=self.EOS)
+        # first generated token is EOS → stop immediately
+        assert out.shape[1] == 3 + 1
+
+    def test_no_eos_id_runs_full_length(self):
+        model = self._model_forcing([self.EOS])
+        prompt = torch.zeros(1, 3, dtype=torch.long)
+        out = model.generate(prompt, max_new_tokens=20, n_loops=2,
+                             top_k=1, eos_token_id=None)
+        assert out.shape[1] == 3 + 20  # no early stop without eos_token_id
+
+    def test_finished_rows_padded_with_eos(self):
+        # row 0 -> EOS (finishes step 0), row 1 -> token 3 (never finishes)
+        model = self._model_forcing([self.EOS, 3])
+        prompt = torch.zeros(2, 3, dtype=torch.long)
+        out = model.generate(prompt, max_new_tokens=5, n_loops=2,
+                             top_k=1, eos_token_id=self.EOS)
+        gen = out[:, 3:]
+        assert out.shape[1] == 3 + 5            # row 1 keeps the batch running
+        assert bool((gen[0] == self.EOS).all())  # row 0 padded with EOS, not row-1's token
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "--verbose"])

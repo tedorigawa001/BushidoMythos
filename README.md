@@ -309,7 +309,7 @@ torchrun --nproc_per_node=$(python -c "import torch; print(torch.cuda.device_cou
 | Schedule | Linear warmup for 2000 steps, then cosine decay |
 | MoE balancing | DeepSeek-V3 router bias, updated after each optimizer step |
 | ACT auxiliary loss | Ponder-cost penalty, enabled with `--act_aux_loss_weight` |
-| Loop curriculum | Random-depth training, enabled with `--loop_curriculum` |
+| Loop curriculum | Variable-depth (random recurrence) training, enabled with `--loop_schedule curriculum` in `finance_pretrain.py` |
 
 ### Financial Domain Pretraining
 
@@ -391,10 +391,26 @@ python training/finance_pretrain.py \
 | `--compile` | `False` | Uses `torch.compile()` for roughly 20-40% speedup on Ampere+; unsupported environments are skipped automatically |
 | `--grad_checkpoint` | `False` | Enable gradient checkpointing in the recurrent loop. Reduces activation memory in proportion to loop depth (larger effect with more loops) at the cost of ~30-40% extra compute |
 | `--mem_log_every` | `100` | Log VRAM stats (`alloc` / `reserved` / `peak` / `frag`) every N steps. Helps diagnose OOM root cause. `0` = disable |
+| `--loop_schedule` | `off` | Recurrent-depth control (experimental). `off` = model default / `fixed` = pin `n_loops` to `max_loop_iters` (clean baseline) / `curriculum` = phase-based variable recurrence (see below) |
+| `--loop_tail_max` | `12` | `curriculum`: max loops in the upward tail (Phase 2+). Set the base checkpoint's `max_loop_iters` to this value so the tail gets its own depth-LoRA |
+| `--loop_tail_p` | `0.2` | `curriculum`: probability of sampling the tail (`hi+1..loop_tail_max`) |
+| `--loop_seed` | `0` | `curriculum`: sampler seed; deterministic per `(seed, step)` so it is resume-safe |
 | `--lr` | `1e-4` | Peak learning rate |
 | `--save_every` | `2000` | Checkpoint interval in steps |
 
 Checkpoints save `scheduler_state`, `scaler_state` for float16 training, and phase metadata, so interrupted runs can resume with the same schedule. A phase is skipped automatically if the current step has already passed its endpoint.
+
+**Loop curriculum (`--loop_schedule curriculum`, experimental):**
+
+A Recurrent-Depth Transformer runs the recurrent block `n_loops` times, so compute scales with loop count. Training at a variable (often lower) recurrence saves compute and, when an upward tail is included, teaches the model to extrapolate to deeper inference loops (test-time scaling). The schedule:
+
+| Phase | Loop range | Tail (`hi+1..loop_tail_max`) |
+|---|---|---|
+| Phase 1 (first half) | 1–4 | off |
+| Phase 1 (second half) | 2–8 | off |
+| Phase 2 onward | 4–8 | sampled with prob `loop_tail_p` |
+
+`fixed`/`curriculum` pass `n_loops` explicitly, overriding the model's internal `cfg.loop_curriculum` sampling. Evaluation should stay at a fixed depth (`eval_perplexity.py --n_loops`, `eval_finance_behavior.py --loops`) and can sweep `4/8/12/16` to measure depth scaling. To give the tail (9–12) its own depth-specific LoRA, build the base checkpoint with a matching `max_loop_iters` (e.g. `make_base_ckpt.py --max_loop_iters 12`). The full plan is in [`training/report/a100_experiment_plan.md`](training/report/a100_experiment_plan.md).
 
 **VRAM diagnostics (`--mem_log_every`):**
 

@@ -178,6 +178,9 @@ def _build_gpt2_tokenizer(vocab_size: int):
         def __init__(self, vs: int):
             self._t = _load_verified_tokenizer()
             self.vocab_size = min(self._t.vocab_size, vs)
+            # EOS id within model vocab (None if out of range) — used to stop generation
+            eos = self._t.eos_token_id
+            self.eos_token_id = eos if (eos is not None and eos < self.vocab_size) else None
 
         def encode(self, text: str) -> list[int]:
             raw = self._t.encode(text, add_special_tokens=False)
@@ -256,6 +259,7 @@ def generate(
             temperature=temperature,
             top_k=top_k,
             repetition_penalty=repetition_penalty,
+            eos_token_id=getattr(tokenizer, "eos_token_id", None),
         )
 
     new_ids = output_ids[0, len(ids):].tolist()

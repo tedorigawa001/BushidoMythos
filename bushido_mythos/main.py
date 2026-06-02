@@ -1417,6 +1417,7 @@ class BushidoMythos(nn.Module):
         temperature: float = 1.0,
         top_k: int = 50,
         repetition_penalty: float = 1.0,
+        eos_token_id: Optional[int] = None,
     ) -> torch.Tensor:
         """
         Autoregressive token generation with KV caching.
@@ -1437,15 +1438,20 @@ class BushidoMythos(nn.Module):
             top_k              -- restrict sampling to top-K logits (0 = disabled)
             repetition_penalty -- > 1.0 penalises tokens already in the sequence;
                                    1.3 is a good starting value (1.0 = disabled)
+            eos_token_id       -- if set, generation stops once every sequence in the
+                                   batch has emitted this token (e.g. GPT-2 <|endoftext|>
+                                   = 50256). None disables early stopping.
 
         Returns:
-            Token indices of shape (B, T + max_new_tokens)
+            Token indices of shape (B, T + n) where n <= max_new_tokens
+            (n < max_new_tokens if all sequences hit eos_token_id early).
         """
         was_training = self.training
         self.eval()
         try:
             return self._generate_inner(
-                input_ids, max_new_tokens, n_loops, temperature, top_k, repetition_penalty
+                input_ids, max_new_tokens, n_loops, temperature, top_k,
+                repetition_penalty, eos_token_id
             )
         finally:
             self.train(was_training)
@@ -1458,6 +1464,7 @@ class BushidoMythos(nn.Module):
         temperature: float,
         top_k: int,
         repetition_penalty: float = 1.0,
+        eos_token_id: Optional[int] = None,
     ) -> torch.Tensor:
         kv_cache: dict = {}
         prompt_len = input_ids.shape[1]
@@ -1466,6 +1473,8 @@ class BushidoMythos(nn.Module):
                 f"input_ids is empty (shape {input_ids.shape}). "
                 "The tokenizer returned no tokens for the given prompt."
             )
+        # Track which batch rows have emitted eos_token_id so we can stop early.
+        finished = torch.zeros(input_ids.shape[0], dtype=torch.bool, device=input_ids.device)
         for step in range(max_new_tokens):
             if step == 0:
                 cur_ids = input_ids
@@ -1496,7 +1505,16 @@ class BushidoMythos(nn.Module):
                 logits[logits < v[:, -1:]] = float("-inf")
             probs = F.softmax(logits, dim=-1)
             next_tok = torch.multinomial(probs, num_samples=1)
-            input_ids = torch.cat([input_ids, next_tok], dim=1)
+            if eos_token_id is not None:
+                # 既に終了した行は EOS で埋める（他行の生成が続いても汚さない）
+                if bool(finished.any()):
+                    next_tok[finished] = eos_token_id
+                input_ids = torch.cat([input_ids, next_tok], dim=1)
+                finished |= next_tok.squeeze(1) == eos_token_id
+                if bool(finished.all()):
+                    break
+            else:
+                input_ids = torch.cat([input_ids, next_tok], dim=1)
         return input_ids
 
     @torch.no_grad()
