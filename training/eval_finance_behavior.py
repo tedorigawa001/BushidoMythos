@@ -121,6 +121,7 @@ def generate_with_raw(model, cfg, tokenizer, prompt, args, device):
         ids = ids[-max_prompt_len:]
 
     input_ids = torch.tensor([ids], dtype=torch.long, device=device)
+    eos_id = getattr(tokenizer, "eos_token_id", None)
     with torch.no_grad():
         out = model.generate(
             input_ids,
@@ -129,14 +130,18 @@ def generate_with_raw(model, cfg, tokenizer, prompt, args, device):
             temperature=args.temp,
             top_k=min(args.top_k, cfg.vocab_size) if args.top_k > 0 else 0,
             repetition_penalty=args.rep_penalty,
+            eos_token_id=eos_id,
         )
-    raw = tokenizer.decode(out[0, len(ids):].tolist())
+    gen_ids = out[0, len(ids):].tolist()
+    # 生成が max_new に達する前に終端したか（EOS 停止 = フォーマット追従の真の指標）
+    terminated = len(gen_ids) < max_new
+    raw = tokenizer.decode(gen_ids)
 
     trimmed = raw
     stop_idx = trimmed.find(_INSTRUCT_STOP)
     if stop_idx != -1:
         trimmed = trimmed[:stop_idx]
-    return trimmed.strip(), raw
+    return trimmed.strip(), raw, terminated
 
 
 # ---------------------------------------------------------------------------
@@ -155,13 +160,13 @@ def structure_cues_in(text: str) -> int:
     return sum(1 for cue in STRUCTURE_CUES if cue in low)
 
 
-def quality_metrics(trimmed: str, raw: str) -> dict:
+def quality_metrics(trimmed: str, raw: str, terminated: bool) -> dict:
     """③(フォーマット追従）と品質の proxy を返す。
 
     注意:
-      - non_degenerate は「長さがあり繰り返しが少ない」だけの弱い品質指標で、
-        ### Response 形式に整理されたかは測らない（フォーマット追従そのものではない）。
-      - 真のフォーマット追従は emitted_boundary（### ターン境界を出したか）。
+      - terminated は「max_new_tokens に達する前に EOS で終端したか」。SFT は
+        応答末尾に <|endoftext|>(50256) を学習させるので、これが真のフォーマット追従。
+      - non_degenerate は「長さがあり繰り返しが少ない」だけの弱い品質指標。
       - structured は接続詞/箇条書きによる「整理された推論」の粗い proxy。
     """
     words = trimmed.split()
@@ -176,8 +181,8 @@ def quality_metrics(trimmed: str, raw: str) -> dict:
         # 構造化推論の proxy: 構造語が複数、または箇条書き
         "n_structure_cues": n_cues,
         "structured": n_cues >= 2 or has_bullets,
-        # ③ 真のフォーマット追従: ### ターン境界を出した = 学習形式を内在化
-        "emitted_boundary": _INSTRUCT_STOP.strip() in raw or raw.strip().startswith("###"),
+        # ③ 真のフォーマット追従: EOS で早期終端した = 停止を学習している
+        "terminated": terminated,
     }
 
 
@@ -218,16 +223,16 @@ def evaluate_ckpt(ckpt_path, prompts, args, device):
     rows = []
     for i, prompt in enumerate(prompts):
         _seed_all(args.seed, device)  # プロンプト間・run 間で再現性を揃える
-        trimmed, raw = generate_with_raw(model, cfg, tokenizer, prompt, args, device)
-        fm = quality_metrics(trimmed, raw)
+        trimmed, raw, terminated = generate_with_raw(model, cfg, tokenizer, prompt, args, device)
+        fm = quality_metrics(trimmed, raw, terminated)
         concepts = risk_concepts_in(trimmed)
         rows.append({
             "prompt": prompt, "output": trimmed,
             "concepts": concepts, **fm,
         })
         print(f"  [{i+1}/{len(prompts)}] {prompt[:40]:<40} "
-              f"concepts={len(concepts)} structured={fm['structured']} "
-              f"nondegen={fm['non_degenerate']}")
+              f"term={fm['terminated']} concepts={len(concepts)} "
+              f"structured={fm['structured']} nondegen={fm['non_degenerate']}")
 
     del model
     if device.type == "cuda":
@@ -243,7 +248,7 @@ def aggregate(rows):
                    for c in RISK_CONCEPTS}
     return {
         "n": n,
-        "boundary_rate": sum(r["emitted_boundary"] for r in rows) / n,
+        "terminated_rate": sum(r["terminated"] for r in rows) / n,
         "non_degenerate_rate": sum(r["non_degenerate"] for r in rows) / n,
         "structured_rate": sum(r["structured"] for r in rows) / n,
         "avg_words": sum(r["n_words"] for r in rows) / n,
@@ -292,7 +297,7 @@ def build_report(results, agg, args) -> str:
             vals.append(f"{v*100:.0f}%" if pct else f"{v:.2f}")
         arrow = " ↓" if lower else (" ↑" if pct or key in ("avg_concepts",) else "")
         return f"| {name}{arrow} | " + " | ".join(vals) + " |"
-    L.append(row("③ format adherence (### boundary)", "boundary_rate", pct=True))
+    L.append(row("③ format adherence (EOS termination)", "terminated_rate", pct=True))
     L.append(row("non-degenerate rate", "non_degenerate_rate", pct=True))
     L.append(row("structured-reasoning rate", "structured_rate", pct=True))
     L.append(row("④ avg risk concepts (0-6)", "avg_concepts"))
@@ -335,7 +340,7 @@ def print_console_summary(results, agg, args):
             (f"{agg[lab][key]*100:>15.0f}%" if pct else f"{agg[lab][key]:>16.2f}")
             for lab in labels)
         print(f"  {name:<28}{vals}")
-    line("③ format adherence (###)", "boundary_rate", pct=True)
+    line("③ format adherence (EOS)", "terminated_rate", pct=True)
     line("non-degenerate rate", "non_degenerate_rate", pct=True)
     line("structured-reasoning rate", "structured_rate", pct=True)
     line("④ avg risk concepts", "avg_concepts")

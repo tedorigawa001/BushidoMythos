@@ -32,14 +32,19 @@ from bushido_mythos import MythosConfig, BushidoMythos
 _DEFAULT_OUT = "checkpoints/a100_v2_gpt2vocab/final.pt"
 
 
-def build_config() -> MythosConfig:
+def build_config(
+    dim: int = 768,
+    n_heads: int = 12,
+    expert_dim: int = 768,
+    max_loop_iters: int = 8,
+) -> MythosConfig:
     return MythosConfig(
         vocab_size=50257,
-        dim=768,
-        n_heads=12,
+        dim=dim,
+        n_heads=n_heads,
         n_kv_heads=4,
         max_seq_len=1024,
-        max_loop_iters=8,
+        max_loop_iters=max_loop_iters,
         prelude_layers=1,
         coda_layers=1,
         attn_type="mla",
@@ -51,7 +56,7 @@ def build_config() -> MythosConfig:
         n_experts=28,
         n_shared_experts=1,
         n_experts_per_tok=2,
-        expert_dim=768,
+        expert_dim=expert_dim,
         act_threshold=0.99,
         act_aux_loss_weight=0.001,
         rope_theta=10000.0,
@@ -86,8 +91,18 @@ def init_from_gpt2(model: BushidoMythos) -> None:
     print("  GPT-2 埋め込み初期化完了 (shape: {})".format(src.shape))
 
 
-def main(out_path: str, use_gpt2_init: bool = True) -> None:
-    cfg = build_config()
+def main(out_path: str, use_gpt2_init: bool = True,
+         dim: int = 768, n_heads: int = 12, expert_dim: int = 768,
+         max_loop_iters: int = 8) -> None:
+    cfg = build_config(dim=dim, n_heads=n_heads, expert_dim=expert_dim,
+                       max_loop_iters=max_loop_iters)
+
+    # GPT-2 small の埋め込み (50257×768) は dim=768 のときだけ流用可能。
+    # dim が異なる構成では shape が合わないため自動でスキップする。
+    if use_gpt2_init and cfg.dim != 768:
+        print(f"[note] dim={cfg.dim} != 768 のため GPT-2 埋め込み初期化はスキップします（ランダム初期化）。")
+        use_gpt2_init = False
+
     model = BushidoMythos(cfg)
     n_params = sum(p.numel() for p in model.parameters())
 
@@ -115,7 +130,8 @@ def main(out_path: str, use_gpt2_init: bool = True) -> None:
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
             "cfg": cfg.__dict__,
-            "tag": "A100-base-v2-dim768-99M-gpt2init",
+            "tag": f"A100-base-dim{cfg.dim}-{n_params/1e6:.0f}M"
+                   f"-loop{cfg.max_loop_iters}{'-gpt2init' if use_gpt2_init else ''}",
             "phase1_steps": 0,
             "phase2_steps": 0,
             "phase3_steps": 0,
@@ -133,5 +149,15 @@ if __name__ == "__main__":
                    help=f"出力パス (デフォルト: {_DEFAULT_OUT})")
     p.add_argument("--no_gpt2_init", action="store_true",
                    help="GPT-2 埋め込み初期化をスキップ（ランダム初期化）")
+    p.add_argument("--dim", type=int, default=768,
+                   help="隠れ次元 (default: 768)。768 以外では GPT-2 初期化は自動スキップ")
+    p.add_argument("--n_heads", type=int, default=12,
+                   help="アテンションヘッド数 (default: 12)。dim を割り切る値にすること")
+    p.add_argument("--expert_dim", type=int, default=768,
+                   help="MoE エキスパート次元 (default: 768)。比例スケールなら dim と同値")
+    p.add_argument("--max_loop_iters", type=int, default=8,
+                   help="最大再帰ループ数 (default: 8)。loop curriculum の裾を使うなら裾の最大値(例 12)に")
     args = p.parse_args()
-    main(args.out, use_gpt2_init=not args.no_gpt2_init)
+    main(args.out, use_gpt2_init=not args.no_gpt2_init,
+         dim=args.dim, n_heads=args.n_heads, expert_dim=args.expert_dim,
+         max_loop_iters=args.max_loop_iters)

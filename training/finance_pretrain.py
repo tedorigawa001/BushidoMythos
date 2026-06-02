@@ -44,6 +44,8 @@ Usage:
 import argparse
 import datetime
 import math
+import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -621,6 +623,45 @@ def lr_lambda(step: int, warmup: int, total: int, min_lr_ratio: float = 0.1) -> 
 
 
 # ──────────────────────────────────────────────────────────────
+# Loop curriculum (experimental, script-driven)
+# ──────────────────────────────────────────────────────────────
+# モデル内部にも素朴な loop_curriculum（毎 step randint(1, max)）があるが、
+# ここではフェーズ別レンジ + max を超える裾を学習スクリプト側から明示制御する。
+# n_loops を明示指定するとモデル内部のサンプリングは上書きされる。
+
+def phase_loop_range(phase_idx: int, progress: float) -> tuple[int, int]:
+    """フェーズと進捗(0..1)から (lo, hi) の基本レンジを返す。
+
+    合意したスケジュール:
+      Phase 1 前半: 1–4 / Phase 1 後半: 2–8 / Phase 2 以降: 4–8
+    """
+    if phase_idx <= 1:
+        return (1, 4) if progress < 0.5 else (2, 8)
+    return (4, 8)
+
+
+def sample_curriculum_loops(phase_idx: int, progress: float, step: int,
+                            args: argparse.Namespace) -> int:
+    """学習ステップごとに n_loops をサンプリングする（resume 安全な決定的シード）。
+
+    確率 tail_p で (hi+1 .. tail_max) の「裾」を引き、depth extrapolation を学習させる。
+    """
+    lo, hi = phase_loop_range(phase_idx, progress)
+    # step+seed のみに依存する決定的 RNG（resume しても同じ系列を再現）
+    rng = random.Random(args.loop_seed * 1_000_003 + step)
+    # 裾(>hi)は Phase 2 以降のみ（Phase 1 は浅いウォームアップに専念させる）
+    if phase_idx >= 2 and args.loop_tail_max > hi and rng.random() < args.loop_tail_p:
+        return rng.randint(hi + 1, args.loop_tail_max)
+    return rng.randint(lo, hi)
+
+
+def _phase_idx_from_name(phase_name: str) -> int:
+    """'Phase3-FinanceDomain' → 3。失敗時は 0。"""
+    m = re.search(r"[Pp]hase\s*(\d)", phase_name)
+    return int(m.group(1)) if m else 0
+
+
+# ──────────────────────────────────────────────────────────────
 # Checkpoint helpers
 # ──────────────────────────────────────────────────────────────
 
@@ -762,8 +803,14 @@ def run_phase(
     total_loss = 0.0
     total_ce   = 0.0
     total_aux  = 0.0
+    total_loops = 0   # サンプリングした n_loops の累積（curriculum 検証・速度効果の確認用）
+    n_loops_micros = 0
     step = start_step
     t0 = time.time()
+
+    # loop curriculum モード解決
+    phase_idx = _phase_idx_from_name(phase_name)
+    loop_mode = getattr(args, "loop_schedule", "off")
 
     use_amp = device.type == "cuda" and amp_dtype != torch.float32
     autocast_device = device.type if device.type == "cuda" else "cpu"
@@ -788,6 +835,15 @@ def run_phase(
           f"batch={args.batch_size}  grad_accum={grad_accum}  eff_batch={eff_batch}  "
           f"seq_len={args.seq_len}  dtype={amp_dtype}")
     print(f"  log every {args.log_every}  save every {args.save_every}")
+    if loop_mode == "curriculum":
+        lo0, hi0 = phase_loop_range(phase_idx, 0.0)
+        lo1, hi1 = phase_loop_range(phase_idx, 1.0)
+        tail_str = (f"  tail≤{args.loop_tail_max} (p={args.loop_tail_p})"
+                    if phase_idx >= 2 else "  tail=off (Phase1)")
+        print(f"  loop curriculum: range {lo0}-{hi0} → {lo1}-{hi1}{tail_str}  "
+              f"seed={args.loop_seed}")
+    elif loop_mode == "fixed":
+        print(f"  loop schedule: FIXED n_loops={cfg.max_loop_iters}")
     print(f"{'='*60}\n")
 
     # Reset peak memory stats at phase start so the first [VRAM] log reflects
@@ -815,8 +871,21 @@ def run_phase(
                 x, y = batch
                 loss_mask = None
 
+            # n_loops の決定（off=モデル既定 / fixed=max固定 / curriculum=フェーズ別+裾）
+            if loop_mode == "fixed":
+                n_loops = cfg.max_loop_iters
+            elif loop_mode == "curriculum":
+                denom = max(total_steps - start_step, 1)
+                progress = (step - start_step) / denom
+                n_loops = sample_curriculum_loops(phase_idx, progress, step, args)
+            else:  # "off": モデル内部のロジック（cfg.loop_curriculum）に委ねる
+                n_loops = None
+            if n_loops is not None:
+                total_loops += n_loops
+                n_loops_micros += 1
+
             with torch.autocast(autocast_device, dtype=amp_dtype, enabled=use_amp):
-                logits = model(x)
+                logits = model(x, n_loops=n_loops)
                 if loss_mask is not None and loss_mask.any():
                     ce_per_tok = F.cross_entropy(
                         logits.reshape(-1, cfg.vocab_size),
@@ -863,12 +932,17 @@ def run_phase(
                 ppl = math.exp(min(avg_ce, 20))
                 elapsed = time.time() - t0
                 lr_now = scheduler.get_last_lr()[0]
+                loops_str = ""
+                if n_loops_micros > 0:
+                    loops_str = f"  loops≈{total_loops / n_loops_micros:.1f}"
                 print(
                     f"[{phase_name}] step {step:6d}/{total_steps}"
                     f"  loss={avg_loss:.4f}  ce={avg_ce:.4f}  aux={avg_aux:.4f}"
-                    f"  ppl={ppl:.1f}  lr={lr_now:.2e}  elapsed={elapsed:.0f}s"
+                    f"  ppl={ppl:.1f}  lr={lr_now:.2e}{loops_str}  elapsed={elapsed:.0f}s"
                 )
                 total_loss = total_ce = total_aux = 0.0
+                total_loops = 0
+                n_loops_micros = 0
                 log_micros = 0
                 t0 = time.time()
 
@@ -1192,9 +1266,26 @@ def parse_args() -> argparse.Namespace:
                         "Reduces VRAM ~proportionally to loop depth (e.g. 7x for 8 loops) "
                         "at the cost of ~30-40%% extra compute. Recommended when OOM.")
 
+    # Loop curriculum (experimental)
+    p.add_argument("--loop_schedule", choices=["off", "fixed", "curriculum"], default="off",
+                   help="再帰ループ数の制御: off=モデル既定(cfg.loop_curriculum に委譲) / "
+                        "fixed=max_loop_iters 固定(クリーンな baseline) / "
+                        "curriculum=フェーズ別レンジ + 裾サンプリング(実験)")
+    p.add_argument("--loop_tail_max", type=int, default=12,
+                   help="curriculum 時の裾の最大ループ数 (default: 12)。base ckpt の max_loop_iters 以下推奨")
+    p.add_argument("--loop_tail_p", type=float, default=0.2,
+                   help="curriculum 時に裾(hi+1..tail_max)を引く確率 (default: 0.2)")
+    p.add_argument("--loop_seed", type=int, default=0,
+                   help="loop サンプラのシード (default: 0)。step+seed で決定的・resume 安全")
+
     args = p.parse_args()
     if args.grad_accum_steps < 1:
         p.error(f"--grad_accum_steps must be >= 1 (got {args.grad_accum_steps})")
+    if args.loop_schedule == "curriculum":
+        if args.loop_tail_max < 1:
+            p.error(f"--loop_tail_max must be >= 1 (got {args.loop_tail_max})")
+        if not (0.0 <= args.loop_tail_p <= 1.0):
+            p.error(f"--loop_tail_p must be in [0,1] (got {args.loop_tail_p})")
     return args
 
 
