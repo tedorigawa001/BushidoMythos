@@ -32,6 +32,8 @@ from training.finance_pretrain import (
     lr_lambda,
     save_checkpoint,
     _vram_str,
+    run_phase,
+    _cycle_batches,
 )
 from chat import find_latest_ckpt
 from bushido_mythos import MythosConfig, BushidoMythos
@@ -614,6 +616,56 @@ class TestVramStr:
         _vram_str(device, reset_peak=True)
         peak_after = torch.cuda.max_memory_allocated(device)
         assert peak_after <= peak_before
+
+
+class TestMemoryReplay:
+    """run_phase memory replay (general-language anchor) behavior."""
+
+    def _args(self, replay_ratio):
+        import argparse
+        return argparse.Namespace(
+            grad_accum_steps=1, grad_clip=1.0, log_every=100, save_every=100,
+            mem_log_every=0, batch_size=2, seq_len=8, loop_schedule="off",
+            replay_ratio=replay_ratio, loop_seed=0, allow_unsafe_checkpoint=False,
+        )
+
+    def _batches(self, fill, n=4):
+        # x は全て token=fill（どちらのデータ由来か識別できるようにする）
+        return [(torch.full((2, 8), fill, dtype=torch.long),
+                 torch.full((2, 8), fill, dtype=torch.long)) for _ in range(n)]
+
+    def _run(self, replay_ratio):
+        cfg = tiny_cfg()
+        model, opt, sch = make_model_and_opt(cfg)
+        seen = []
+        orig_forward = model.forward
+        def rec(x, **kw):
+            seen.append(int(x.reshape(-1)[0].item()))
+            return orig_forward(x, **kw)
+        model.forward = rec
+        current = self._batches(1)   # 現フェーズ由来 = token 1
+        replay  = self._batches(2)   # リプレイ由来   = token 2
+        tmp = Path(tempfile.mkdtemp())
+        run_phase("Phase2-Test", current, model, cfg, opt, sch, self._args(replay_ratio),
+                  tmp, 0, 4, "phase2_final.pt", torch.device("cpu"), torch.float32,
+                  replay_dataset=replay)
+        return seen
+
+    def test_cycle_batches_is_infinite(self):
+        g = _cycle_batches([("a",), ("b",)])
+        assert [next(g) for _ in range(5)] == [("a",), ("b",), ("a",), ("b",), ("a",)]
+
+    def test_full_replay_uses_anchor_only(self):
+        seen = self._run(replay_ratio=1.0)
+        assert seen and all(v == 2 for v in seen)  # 全て replay(token 2)由来
+
+    def test_zero_replay_uses_current_only(self):
+        seen = self._run(replay_ratio=0.0)
+        assert seen and all(v == 1 for v in seen)  # 全て current(token 1)由来
+
+    def test_replay_decision_is_deterministic_across_runs(self):
+        # 同じ seed/step なら replay 判定系列が一致（resume 安全）
+        assert self._run(0.5) == self._run(0.5)
 
 
 if __name__ == "__main__":

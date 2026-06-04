@@ -884,11 +884,15 @@ def run_phase(
             if step >= total_steps:
                 break
 
-            # 記憶リプレイ: 確率 replay_ratio で前フェーズ（一般言語）バッチに差し替え。
-            # CLS 的インターリーブで破滅的忘却（Phase 進行に伴う汎用性能劣化）を抑える。
-            if replay_iter is not None and random.random() < replay_ratio:
-                batch = next(replay_iter)
-                total_replay += 1
+            # 記憶リプレイ: 確率 replay_ratio で一般言語(WikiText)アンカーに差し替え。
+            # 決定は step ベースの決定的 RNG（resume 安全・loop_seed と同思想）。
+            # step は grad_accum グループ内で一定なので、グループ単位で replay/通常が揃う。
+            # loop curriculum (×1_000_003) と別乗数でデコリレート。
+            if replay_iter is not None:
+                _rrng = random.Random(getattr(args, "loop_seed", 0) * 2_654_435_761 + step)
+                if _rrng.random() < replay_ratio:
+                    batch = next(replay_iter)
+                    total_replay += 1
 
             # SFTDataset yields (x, y, loss_mask); TextDataset yields (x, y)
             if len(batch) == 3:
@@ -1117,15 +1121,11 @@ def train(args: argparse.Namespace) -> None:
 
     last_scaler = None  # tracks scaler from the last run_phase for final.pt
 
-    # ── Memory replay anchor (general language) for Phase 2+ ──
-    # 破滅的忘却対策: Phase 2 以降で一般言語(WikiText-103)を少量インターリーブする。
-    # キャッシュ済みなら構築は軽い。Phase 1 自身はアンカーなのでリプレイしない。
+    # ── Memory replay anchor (general-language / WikiText-103) for Phase 2+ ──
+    # 破滅的忘却対策。アンカーは「前フェーズ全混合」ではなく一般言語(WikiText)のみ
+    # = general-language replay。Phase 5 の汎用劣化(PPL 54→361)を直撃する設計。
+    # 構築は Phase 2 直前に遅延（Phase 1 を回した場合は ds1 を再利用し WikiText を二重に持たない）。
     replay_ds = None
-    if args.replay_ratio > 0:
-        print(f"\n[Replay] Building general-language anchor (WikiText-103) for rehearsal "
-              f"({args.replay_ratio*100:.0f}% of Phase 2+ batches) …")
-        replay_ds = build_wikitext103(cfg.vocab_size, args.seq_len, args.batch_size,
-                                      device, args.cache_dir)
 
     # ── Phase 1: WikiText-103 ─────────────────────────────────
     if args.phase in (0, 1) and step < p1_total:
@@ -1141,6 +1141,15 @@ def train(args: argparse.Namespace) -> None:
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
         )
+        if args.replay_ratio > 0:
+            replay_ds = ds1  # 一般言語アンカーを再利用（WikiText を二重に保持しない）
+
+    # ── Memory replay anchor: build now if Phase 1 was skipped (resume) ──
+    if args.replay_ratio > 0 and replay_ds is None:
+        print(f"\n[Replay] Building general-language anchor (WikiText-103) "
+              f"({args.replay_ratio*100:.0f}% of Phase 2+ batches) …")
+        replay_ds = build_wikitext103(cfg.vocab_size, args.seq_len, args.batch_size,
+                                      device, args.cache_dir)
 
     # ── Phase 2: Reasoning mix (OpenWebMath + Orca Math [+ Dolly]) ──────────
     if args.phase in (0, 2) and step < p2_total:
