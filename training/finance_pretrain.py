@@ -779,6 +779,19 @@ def load_checkpoint(path: str, model, optimizer, scheduler, scaler=None, allow_u
 # Single training phase
 # ──────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────
+# Memory replay (rehearsal) — anti-forgetting
+# ──────────────────────────────────────────────────────────────
+# CLS（補完学習系）的に、後フェーズの学習中に前フェーズ（一般言語）の
+# バッチを少量インターリーブして破滅的忘却を抑える。
+
+def _cycle_batches(dataset):
+    """データセットを無限に巡回してバッチを供給する（リプレイ用）。"""
+    while True:
+        for b in dataset:
+            yield b
+
+
 def run_phase(
     phase_name: str,
     dataset,
@@ -799,18 +812,25 @@ def run_phase(
     phase4_steps: int = 0,
     phase5_steps: int = 0,
     resume_path: str = None,
+    replay_dataset=None,
 ) -> int:
     total_loss = 0.0
     total_ce   = 0.0
     total_aux  = 0.0
     total_loops = 0   # サンプリングした n_loops の累積（curriculum 検証・速度効果の確認用）
     n_loops_micros = 0
+    total_replay = 0  # リプレイで差し替えた micro-batch 数（忘却対策の発火確認用）
     step = start_step
     t0 = time.time()
 
     # loop curriculum モード解決
     phase_idx = _phase_idx_from_name(phase_name)
     loop_mode = getattr(args, "loop_schedule", "off")
+
+    # 記憶リプレイ（rehearsal）: replay_dataset があれば無限巡回イテレータを用意
+    replay_ratio = getattr(args, "replay_ratio", 0.0)
+    replay_iter = (_cycle_batches(replay_dataset)
+                   if (replay_dataset is not None and replay_ratio > 0) else None)
 
     use_amp = device.type == "cuda" and amp_dtype != torch.float32
     autocast_device = device.type if device.type == "cuda" else "cpu"
@@ -844,6 +864,8 @@ def run_phase(
               f"seed={args.loop_seed}")
     elif loop_mode == "fixed":
         print(f"  loop schedule: FIXED n_loops={cfg.max_loop_iters}")
+    if replay_iter is not None:
+        print(f"  memory replay: {replay_ratio*100:.0f}% of batches drawn from general-language anchor (anti-forgetting)")
     print(f"{'='*60}\n")
 
     # Reset peak memory stats at phase start so the first [VRAM] log reflects
@@ -861,6 +883,12 @@ def run_phase(
         for batch in dataset:
             if step >= total_steps:
                 break
+
+            # 記憶リプレイ: 確率 replay_ratio で前フェーズ（一般言語）バッチに差し替え。
+            # CLS 的インターリーブで破滅的忘却（Phase 進行に伴う汎用性能劣化）を抑える。
+            if replay_iter is not None and random.random() < replay_ratio:
+                batch = next(replay_iter)
+                total_replay += 1
 
             # SFTDataset yields (x, y, loss_mask); TextDataset yields (x, y)
             if len(batch) == 3:
@@ -935,14 +963,18 @@ def run_phase(
                 loops_str = ""
                 if n_loops_micros > 0:
                     loops_str = f"  loops≈{total_loops / n_loops_micros:.1f}"
+                replay_str = ""
+                if replay_iter is not None and log_micros > 0:
+                    replay_str = f"  replay={total_replay / max(log_micros,1)*100:.0f}%"
                 print(
                     f"[{phase_name}] step {step:6d}/{total_steps}"
                     f"  loss={avg_loss:.4f}  ce={avg_ce:.4f}  aux={avg_aux:.4f}"
-                    f"  ppl={ppl:.1f}  lr={lr_now:.2e}{loops_str}  elapsed={elapsed:.0f}s"
+                    f"  ppl={ppl:.1f}  lr={lr_now:.2e}{loops_str}{replay_str}  elapsed={elapsed:.0f}s"
                 )
                 total_loss = total_ce = total_aux = 0.0
                 total_loops = 0
                 n_loops_micros = 0
+                total_replay = 0
                 log_micros = 0
                 t0 = time.time()
 
@@ -1085,6 +1117,16 @@ def train(args: argparse.Namespace) -> None:
 
     last_scaler = None  # tracks scaler from the last run_phase for final.pt
 
+    # ── Memory replay anchor (general language) for Phase 2+ ──
+    # 破滅的忘却対策: Phase 2 以降で一般言語(WikiText-103)を少量インターリーブする。
+    # キャッシュ済みなら構築は軽い。Phase 1 自身はアンカーなのでリプレイしない。
+    replay_ds = None
+    if args.replay_ratio > 0:
+        print(f"\n[Replay] Building general-language anchor (WikiText-103) for rehearsal "
+              f"({args.replay_ratio*100:.0f}% of Phase 2+ batches) …")
+        replay_ds = build_wikitext103(cfg.vocab_size, args.seq_len, args.batch_size,
+                                      device, args.cache_dir)
+
     # ── Phase 1: WikiText-103 ─────────────────────────────────
     if args.phase in (0, 1) and step < p1_total:
         print("\n[Phase 1] Building WikiText-103 dataset …")
@@ -1117,6 +1159,7 @@ def train(args: argparse.Namespace) -> None:
             model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
             args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p2_total,
             phase_final_name="phase2_final.pt", device=device, amp_dtype=amp_dtype,
+            replay_dataset=replay_ds,
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
@@ -1132,6 +1175,7 @@ def train(args: argparse.Namespace) -> None:
             model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
             args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p3_total,
             phase_final_name="phase3_final.pt", device=device, amp_dtype=amp_dtype,
+            replay_dataset=replay_ds,
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
@@ -1147,6 +1191,7 @@ def train(args: argparse.Namespace) -> None:
             model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
             args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p4_total,
             phase_final_name="phase4_final.pt", device=device, amp_dtype=amp_dtype,
+            replay_dataset=replay_ds,
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
@@ -1162,6 +1207,7 @@ def train(args: argparse.Namespace) -> None:
             model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
             args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p5_total,
             phase_final_name="phase5_final.pt", device=device, amp_dtype=amp_dtype,
+            replay_dataset=replay_ds,
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
@@ -1278,6 +1324,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--loop_seed", type=int, default=0,
                    help="loop サンプラのシード (default: 0)。step+seed で決定的・resume 安全")
 
+    # Memory replay (anti-forgetting)
+    p.add_argument("--replay_ratio", type=float, default=0.0,
+                   help="記憶リプレイ: Phase 2 以降で、この割合のバッチを一般言語(WikiText-103)"
+                        "アンカーに差し替える (例 0.05=5%%)。破滅的忘却(汎用性能の劣化)を抑える。"
+                        "0.0=無効(既定)")
+
     args = p.parse_args()
     if args.grad_accum_steps < 1:
         p.error(f"--grad_accum_steps must be >= 1 (got {args.grad_accum_steps})")
@@ -1286,6 +1338,8 @@ def parse_args() -> argparse.Namespace:
             p.error(f"--loop_tail_max must be >= 1 (got {args.loop_tail_max})")
         if not (0.0 <= args.loop_tail_p <= 1.0):
             p.error(f"--loop_tail_p must be in [0,1] (got {args.loop_tail_p})")
+    if not (0.0 <= args.replay_ratio < 1.0):
+        p.error(f"--replay_ratio must be in [0,1) (got {args.replay_ratio})")
     return args
 
 
