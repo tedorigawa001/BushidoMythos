@@ -157,22 +157,47 @@ def load_wikitext103(split: str, tokenizer, seq_len: int) -> torch.Tensor:
     ids = tokenizer.encode(text, add_special_tokens=False)
     print(f"  {len(ids):,} tokens")
     if len(ids) == 0:
+        hint = ("テキストは非空なのでトークナイザが空 id を返した可能性が高い"
+                "（HF キャッシュ破損）" if len(text) > 0 else "テキストが空")
         raise RuntimeError(
-            f"WikiText-103 ({split}) のトークン数が 0。{n_rows} 行読み込んだが "
-            f"列 '{text_col}' のテキストが全て空でした。列名/データ内容を確認してください。")
+            f"WikiText-103 ({split}) のトークン数が 0。{n_rows} 行・{len(text):,} 文字。"
+            f"{hint}。Colab なら !rm -rf ~/.cache/huggingface/hub/models--gpt2 で再試行。")
     return torch.tensor(ids, dtype=torch.long)
 
 
 def _build_gpt2_tokenizer():
-    """GPT-2 tokenizer を返す（ネットワーク不要なら local_files_only=True）。"""
+    """検証付きで GPT-2 tokenizer を返す。
+
+    壊れた HF キャッシュは「どの文字列も空リストにエンコードする」トークナイザを
+    返すことがある（Colab/Drive で実際に発生）。各候補を "Hello" でエンコードして
+    非空を確認し、合格したものだけ返す（chat.py の load_verified_gpt2_tokenizer と同方針）。
+    fast(Rust)実装を優先する。
+    """
     try:
-        from transformers import GPT2Tokenizer
-        try:
-            return GPT2Tokenizer.from_pretrained("gpt2", local_files_only=True)
-        except Exception:
-            return GPT2Tokenizer.from_pretrained("gpt2")
+        from transformers import AutoTokenizer, GPT2TokenizerFast
     except ImportError:
         raise RuntimeError("transformers が必要です: pip install transformers")
+
+    attempts = [
+        lambda: AutoTokenizer.from_pretrained("gpt2", use_fast=True, local_files_only=True),
+        lambda: GPT2TokenizerFast.from_pretrained("gpt2", local_files_only=True),
+        lambda: AutoTokenizer.from_pretrained("gpt2", use_fast=True),
+        lambda: GPT2TokenizerFast.from_pretrained("gpt2"),
+    ]
+    errors = []
+    for load in attempts:
+        try:
+            tok = load()
+            if tok.encode("Hello", add_special_tokens=False):
+                return tok
+            errors.append("loaded tokenizer returned empty ids for 'Hello'")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{type(e).__name__}: {e}")
+    raise RuntimeError(
+        "GPT-2 tokenizer のロードに失敗、または空 id を返しました。"
+        "HF キャッシュ破損の可能性。Colab なら次を実行して再試行してください:\n"
+        "  !rm -rf ~/.cache/huggingface/hub/models--gpt2\n"
+        + "\n".join(errors[-4:]))
 
 
 # ---------------------------------------------------------------------------
