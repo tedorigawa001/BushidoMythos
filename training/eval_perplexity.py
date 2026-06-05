@@ -128,7 +128,18 @@ def load_wikitext103(split: str, tokenizer, seq_len: int) -> torch.Tensor:
         raise RuntimeError("datasets が必要です: pip install datasets")
 
     print(f"Loading WikiText-103 ({split})...")
-    ds = load_dataset("wikitext", "wikitext-103-v1", split=split)
+    # 新しい datasets/huggingface_hub は bare 名 "wikitext" を拒否し namespace/name を要求する。
+    # namespaced("Salesforce/wikitext")を優先し、旧版向けに bare 名へフォールバックする。
+    ds = None
+    _errs = []
+    for _repo in ("Salesforce/wikitext", "wikitext"):
+        try:
+            ds = load_dataset(_repo, "wikitext-103-v1", split=split)
+            break
+        except Exception as _e:  # noqa: BLE001 — どの repo 名が通るか試す
+            _errs.append(f"{_repo}: {type(_e).__name__}: {_e}")
+    if ds is None:
+        raise RuntimeError("WikiText-103 のロードに失敗しました:\n" + "\n".join(_errs))
 
     # 全テキストを結合して tokenize
     text = "\n\n".join(ex["text"] for ex in ds if ex["text"].strip())

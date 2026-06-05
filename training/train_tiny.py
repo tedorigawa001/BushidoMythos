@@ -104,7 +104,11 @@ class WikitextDataset:
         else:
             print("  Tokenizing row-by-row (first run, will cache) …")
             tok = AutoTokenizer.from_pretrained("gpt2")
-            ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+            # 新しい datasets は bare 名 "wikitext" を拒否 → namespaced 優先・bare へフォールバック
+            try:
+                ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
+            except Exception:
+                ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
             all_ids: list[int] = []
             for row in ds["text"]:
                 if row.strip():
