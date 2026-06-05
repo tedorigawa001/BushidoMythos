@@ -12,8 +12,10 @@ phase1_final（一般言語で学習済み、WikiText PPL が低い状態）か�
 注意:
   - ローカル pilot。flat-LR・短ステップ・部分評価(--eval_max_chunks)で「方向性」を見る。
     絶対値や効果量は本番(A100・フルフェーズ)とは異なる。
-  - 公平性: 各 run は phase1_final を再ロードして同一の初期重みから開始し、
-    torch シードを揃えるので、差は replay の有無のみに由来する。
+  - 公平性: 各 run は phase1_final を再ロードして同一の初期重みから開始し、torch
+    シードも揃える。つまり「同一初期重み・同一シードで replay_ratio だけを変える」比較。
+    ただし replay 有効時は金融SFTバッチの一部が WikiText に置き換わるため、モデルが
+    見る金融バッチ列も変化する（「replay 以外は完全に同一」ではない点に注意）。
 
 使い方:
     python training/exp_replay_pilot.py --steps 400 --replay_ratios 0.0 0.2
