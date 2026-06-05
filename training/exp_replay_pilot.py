@@ -74,12 +74,26 @@ def _text_from_cache(name, vocab, seq_len, bs, device, cache_dir):
     return TextDataset([], vocab, seq_len, bs, device, cp)
 
 
-def _run_args(replay_ratio, seq_len, batch_size):
+def _load_cfg(ckpt_path, allow_unsafe):
+    """チェックポイントから cfg だけを読む（モデルを VRAM に載せない軽量版）。"""
+    try:
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    except Exception:
+        if not allow_unsafe:
+            raise RuntimeError(
+                f"{ckpt_path} を weights_only=True で読めません。"
+                "信頼できる checkpoint なら --allow_unsafe_checkpoint を付けてください。")
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    from bushido_mythos import MythosConfig
+    return MythosConfig(**ck["cfg"])
+
+
+def _run_args(replay_ratio, seq_len, batch_size, allow_unsafe):
     return argparse.Namespace(
         grad_accum_steps=1, grad_clip=1.0, log_every=100, save_every=10_000_000,
         mem_log_every=0, batch_size=batch_size, seq_len=seq_len,
         loop_schedule="off", replay_ratio=replay_ratio, loop_seed=0,
-        allow_unsafe_checkpoint=True,
+        allow_unsafe_checkpoint=allow_unsafe,
     )
 
 
@@ -120,7 +134,23 @@ def main():
                         "（既定=『置換』モード: 総ステップ固定で金融ステップが ratio 分減る）")
     p.add_argument("--cache_dir", default=".cache")
     p.add_argument("--device", default="cpu")
+    p.add_argument("--allow_unsafe_checkpoint", action="store_true",
+                   help="weights_only=True で読めない場合に weights_only=False で再ロードを許可"
+                        "（自作の信頼できる checkpoint のみ）")
     args = p.parse_args()
+
+    # 入力検証（異常値で変な結果を出さないよう早めに落とす）
+    if args.steps <= 0:
+        p.error(f"--steps must be > 0 (got {args.steps})")
+    if args.seq_len <= 0:
+        p.error(f"--seq_len must be > 0 (got {args.seq_len})")
+    if args.batch_size <= 0:
+        p.error(f"--batch_size must be > 0 (got {args.batch_size})")
+    if args.eval_max_chunks <= 0:
+        p.error(f"--eval_max_chunks must be > 0 (got {args.eval_max_chunks})")
+    for r in args.replay_ratios:
+        if not (0.0 <= r < 1.0):
+            p.error(f"--replay_ratios must be in [0,1) (got {r})")
 
     device = torch.device(args.device)
     mode = "ADD(金融ステップ一定)" if args.keep_finance_steps else "REPLACE(総ステップ固定)"
@@ -132,7 +162,7 @@ def main():
     tok = _build_gpt2_tokenizer()
     wt_ids = load_wikitext103("validation", tok, 1024)
 
-    cfg0 = load_model(args.ckpt, device, allow_unsafe=True)[1]
+    cfg0 = _load_cfg(args.ckpt, args.allow_unsafe_checkpoint)  # モデルを載せず cfg だけ
     print(f"\n[Eval data] finance held-out ({args.finance_eval}) …")
     fin_ids = _load_token_ids(args.cache_dir, args.finance_eval, cfg0.vocab_size)
 
@@ -145,7 +175,7 @@ def main():
                                  args.batch_size, device, args.cache_dir)
 
     # ── ベースライン（学習前）──────────────────────────────────
-    base_model, base_cfg = load_model(args.ckpt, device, allow_unsafe=True)
+    base_model, base_cfg = load_model(args.ckpt, device, allow_unsafe=args.allow_unsafe_checkpoint)
     wt0 = _eval_ppl(base_model, base_cfg, wt_ids, device, args.eval_max_chunks)
     fin0 = _eval_ppl(base_model, base_cfg, fin_ids, device, args.eval_max_chunks)
     print(f"\n=== Baseline (phase1_final): WikiText PPL={wt0:.2f}  finance PPL={fin0:.2f} ===")
@@ -159,10 +189,10 @@ def main():
         print(f"\n{'#'*60}\n# Run: replay_ratio={ratio}  total_steps={total}  "
               f"≈finance_steps={fin_steps}  ({mode})\n{'#'*60}")
         torch.manual_seed(0)  # 金融バッチ順を揃える（同一初期重み・同一seedで ratio だけ変える）
-        model, cfg = load_model(args.ckpt, device, allow_unsafe=True)
+        model, cfg = load_model(args.ckpt, device, allow_unsafe=args.allow_unsafe_checkpoint)
         opt = AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.1)
         sch = LambdaLR(opt, lambda s: 1.0)  # flat LR
-        rp_args = _run_args(ratio, args.seq_len, args.batch_size)
+        rp_args = _run_args(ratio, args.seq_len, args.batch_size, args.allow_unsafe_checkpoint)
         tmp = Path(tempfile.mkdtemp())
         run_phase("ReplayPilot", ds_finance, model, cfg, opt, sch, rp_args,
                   tmp, 0, total, "pilot_final.pt", device, torch.float32,
