@@ -163,12 +163,15 @@ def compute_perplexity(
     stride: Optional[int] = None,
     n_loops: int = 8,
     amp_dtype: Optional[torch.dtype] = None,
+    max_chunks: Optional[int] = None,
 ) -> tuple[float, float]:
     """WikiText-103 PPL を計算する。
 
     Args:
-        stride:    None = 非重複チャンク（高速）。int = スライディングウィンドウ（より正確）。
-        amp_dtype: torch.autocast に使う dtype。None = autocast なし（CPU / float32）。
+        stride:     None = 非重複チャンク（高速）。int = スライディングウィンドウ（より正確）。
+        amp_dtype:  torch.autocast に使う dtype。None = autocast なし（CPU / float32）。
+        max_chunks: None = 全チャンク。int = 先頭 N チャンクで打ち切り（高速な部分評価）。
+                    部分評価のため絶対値は full PPL と一致しないが、相対比較には十分。
 
     Returns:
         (ppl, avg_nll): perplexity と平均 negative log-likelihood。
@@ -229,6 +232,9 @@ def compute_perplexity(
             pos += stride
             n_chunks += 1
 
+            if max_chunks is not None and n_chunks >= max_chunks:
+                break
+
             if n_chunks % 20 == 0:
                 elapsed = time.time() - t0
                 ppl_so_far = math.exp(total_nll / max(total_counted, 1))
@@ -288,6 +294,7 @@ def run_compare(args: argparse.Namespace, device: torch.device,
             model, cfg, token_ids, device,
             seq_len=args.seq_len, stride=args.stride,
             n_loops=args.n_loops, amp_dtype=amp_dtype,
+            max_chunks=args.max_chunks,
         )
         results.append((name.replace("_final.pt", "").replace(".pt", ""), n_params, ppl))
         print(f"  {name}: PPL = {ppl:.2f}")
@@ -332,6 +339,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--allow_unsafe_checkpoint", action="store_true",
                    help="weights_only=True 失敗時に weights_only=False で再ロードを許可する"
                         "（信頼できるチェックポイントのみ。任意コード実行のリスクあり）")
+    p.add_argument("--max_chunks", type=int, default=None,
+                   help="先頭 N チャンクで評価を打ち切る（高速な部分評価）。相対比較向け。"
+                        "未指定=全チャンク")
     return p.parse_args()
 
 
@@ -383,7 +393,7 @@ def main() -> None:
     ppl, avg_nll = compute_perplexity(
         model, cfg, token_ids, device,
         seq_len=args.seq_len, stride=args.stride, n_loops=args.n_loops,
-        amp_dtype=amp_dtype,
+        amp_dtype=amp_dtype, max_chunks=args.max_chunks,
     )
 
     ckpt_label = Path(args.ckpt).stem
