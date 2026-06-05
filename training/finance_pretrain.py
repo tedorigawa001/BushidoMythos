@@ -1337,7 +1337,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--replay_ratio", type=float, default=0.0,
                    help="記憶リプレイ: Phase 2 以降で、この割合のバッチを一般言語(WikiText-103)"
                         "アンカーに差し替える (例 0.05=5%%)。破滅的忘却(汎用性能の劣化)を抑える。"
-                        "0.0=無効(既定)")
+                        "0.0=無効(既定)。注: 追加ではなく『置換』なので、値を上げると実質の"
+                        "ドメイン学習量が減る — 必要なら総ステップ数を増やして補う。")
 
     args = p.parse_args()
     if args.grad_accum_steps < 1:
