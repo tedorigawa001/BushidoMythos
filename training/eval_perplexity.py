@@ -141,11 +141,25 @@ def load_wikitext103(split: str, tokenizer, seq_len: int) -> torch.Tensor:
     if ds is None:
         raise RuntimeError("WikiText-103 のロードに失敗しました:\n" + "\n".join(_errs))
 
+    # 列名は通常 "text"。環境差で異なる場合に備え、無ければ最初の文字列列を使う。
+    cols = getattr(ds, "column_names", None) or []
+    text_col = "text" if "text" in cols else (cols[0] if cols else "text")
+    n_rows = len(ds)
+    print(f"  rows={n_rows:,}  text_col='{text_col}'  (columns={cols})")
+    if n_rows == 0:
+        raise RuntimeError(
+            f"WikiText-103 ({split}) が 0 行でした。repo/config/split を確認してください "
+            f"(repo={_repo!r}, config='wikitext-103-v1', split={split!r})。")
+
     # 全テキストを結合して tokenize
-    text = "\n\n".join(ex["text"] for ex in ds if ex["text"].strip())
+    text = "\n\n".join(ex[text_col] for ex in ds if str(ex[text_col]).strip())
     print(f"  Tokenizing {len(text):,} characters...")
     ids = tokenizer.encode(text, add_special_tokens=False)
     print(f"  {len(ids):,} tokens")
+    if len(ids) == 0:
+        raise RuntimeError(
+            f"WikiText-103 ({split}) のトークン数が 0。{n_rows} 行読み込んだが "
+            f"列 '{text_col}' のテキストが全て空でした。列名/データ内容を確認してください。")
     return torch.tensor(ids, dtype=torch.long)
 
 
@@ -254,7 +268,14 @@ def compute_perplexity(
                       f"ppl={ppl_so_far:.2f}  elapsed={elapsed:.0f}s", end="\r")
 
     print()
-    avg_nll = total_nll / max(total_counted, 1)
+    if total_counted == 0:
+        # 1 トークンも評価できていない。max(total_counted,1) で割ると avg_nll=0 →
+        # PPL=1.0 という誤解を招く値を黙って返してしまうので、明示的に落とす。
+        raise RuntimeError(
+            f"compute_perplexity: 評価トークン 0 件（token_ids={n_tokens} tokens, "
+            f"seq_len={seq_len}, n_chunks={n_chunks}）。入力 token 列が空/極小か、"
+            "seq_len が大きすぎる可能性があります（PPL=1.0 はこの失敗のサイン）。")
+    avg_nll = total_nll / total_counted
     ppl = math.exp(avg_nll)
     return ppl, avg_nll
 
