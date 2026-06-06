@@ -113,6 +113,10 @@ def main():
         results[tag] = (losses, peak_mb, elapsed)
         print(f"  loss: {losses[0]:.4f} → {losses[-1]:.4f}  | peak={peak_mb:.0f}MB  | {elapsed:.1f}s")
         del model
+        if device.type == "cuda":
+            # reserved memory を解放（次 run の peak 測定をきれいにし OOM を避ける。
+            # peak のリセット自体は _train の冒頭で行う）
+            torch.cuda.empty_cache()
 
     # ── サマリ ───────────────────────────────────────────────
     (l32, m32, t32) = results["fp32 AdamW"]
