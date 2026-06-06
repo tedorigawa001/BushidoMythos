@@ -77,10 +77,14 @@ def main():
     p.add_argument("--split", default="validation", choices=["validation", "test"])
     p.add_argument("--eval_max_chunks", type=int, default=40)
     p.add_argument("--finance_eval", default="financial_news_gpt2",
-                   help="金融 held-out 評価のキャッシュ名(無ければ金融評価をスキップ)")
+                   help="金融ドメイン評価のキャッシュ名(無ければスキップ)。"
+                        "注: Phase3 以降の checkpoint では学習分布と重なりうる"
+                        "(Phase1 checkpoint なら held-out)")
     p.add_argument("--cache_dir", default=".cache")
     p.add_argument("--allow_unsafe_checkpoint", action="store_true")
     args = p.parse_args()
+    if args.eval_max_chunks <= 0:
+        p.error(f"--eval_max_chunks must be > 0 (got {args.eval_max_chunks})")
 
     # dynamic quantization の INT8 演算は CPU 実行
     device = torch.device("cpu")
@@ -96,15 +100,16 @@ def main():
     nparams = sum(p.numel() for p in model.parameters())
     sz32 = _state_dict_mb(model)
 
-    # 金融 held-out(学習に未使用の財務テキスト)。キャッシュが無ければスキップ。
+    # 金融ドメイン評価(financial_news)。キャッシュが無ければスキップ。
+    # Phase1 checkpoint なら held-out、Phase3 以降では学習分布と重なりうる。
     fin_ids = _load_token_ids(args.cache_dir, args.finance_eval, cfg.vocab_size)
     if fin_ids is None:
-        print(f"  [note] 金融 held-out キャッシュ無し ({args.finance_eval}); WikiText のみ評価")
+        print(f"  [note] 金融ドメイン評価キャッシュ無し ({args.finance_eval}); WikiText のみ評価")
 
     wt32 = _eval_ppl(model, cfg, wt_ids, device, args.eval_max_chunks)
     fin32 = _eval_ppl(model, cfg, fin_ids, device, args.eval_max_chunks) if fin_ids is not None else None
     print(f"  params={nparams/1e6:.1f}M  Linear層={n_lin}  size={sz32:.0f}MB  "
-          f"WikiText PPL={wt32:.2f}" + (f"  finance PPL={fin32:.2f}" if fin32 else ""))
+          f"WikiText PPL={wt32:.2f}" + (f"  finance PPL={fin32:.2f}" if fin32 is not None else ""))
 
     # ── INT8 dynamic ──────────────────────────────────────────
     print("\n=== INT8 dynamic quantization ===")
@@ -112,7 +117,7 @@ def main():
     sz8 = _state_dict_mb(qmodel)
     wt8 = _eval_ppl(qmodel, cfg, wt_ids, device, args.eval_max_chunks)
     fin8 = _eval_ppl(qmodel, cfg, fin_ids, device, args.eval_max_chunks) if fin_ids is not None else None
-    print(f"  size={sz8:.0f}MB  WikiText PPL={wt8:.2f}" + (f"  finance PPL={fin8:.2f}" if fin8 else ""))
+    print(f"  size={sz8:.0f}MB  WikiText PPL={wt8:.2f}" + (f"  finance PPL={fin8:.2f}" if fin8 is not None else ""))
 
     # ── サマリ ───────────────────────────────────────────────
     def _pct(a, b):
@@ -121,18 +126,18 @@ def main():
     print(f"  推論量子化 (INT8 dynamic) — params={nparams/1e6:.1f}M, Linear={n_lin}")
     print("=" * 64)
     hdr = f"  {'':<8}{'size MB':>10}{'WikiText↓':>12}"
-    if fin32:
+    if fin32 is not None:
         hdr += f"{'finance↓':>12}"
     print(hdr)
     row32 = f"  {'fp32':<8}{sz32:>10.0f}{wt32:>12.2f}"
     row8 = f"  {'INT8':<8}{sz8:>10.0f}{wt8:>12.2f}"
-    if fin32:
+    if fin32 is not None:
         row32 += f"{fin32:>12.2f}"
         row8 += f"{fin8:>12.2f}"
     print(row32); print(row8)
     print(f"  サイズ削減: {sz32 - sz8:.0f}MB ({(1 - sz8/sz32)*100:.0f}%)")
     print(f"  WikiText PPL: {wt32:.2f} → {wt8:.2f} ({_pct(wt32, wt8)})")
-    if fin32:
+    if fin32 is not None:
         print(f"  finance  PPL: {fin32:.2f} → {fin8:.2f} ({_pct(fin32, fin8)})")
     print("=" * 64)
     print("  注: nn.Embedding は dynamic quant 対象外(埋め込みは fp32 のまま)。")
