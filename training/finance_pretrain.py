@@ -738,6 +738,7 @@ def save_checkpoint(
         "step": step,
         "model_state": _strip_compile_prefix(model.state_dict()),
         "optimizer_state": optimizer.state_dict(),
+        "optimizer_type": type(optimizer).__name__,  # resume 時の不一致検出用
         "scheduler_state": scheduler.state_dict(),
         "cfg": cfg.__dict__,
         "tag": tag,
@@ -773,7 +774,19 @@ def load_checkpoint(path: str, model, optimizer, scheduler, scaler=None, allow_u
         print(f"  Skipping shape-mismatched keys: {skipped}")
     model.load_state_dict(filtered, strict=False)
     if "optimizer_state" in ckpt:
-        optimizer.load_state_dict(ckpt["optimizer_state"])
+        # optimizer 種別が違う（例: fp32 AdamW ⇄ 8-bit AdamW8bit）と state 構造が
+        # 合わず壊れる。不一致/失敗時は警告してリセット（model/scheduler は継続）。
+        saved_optim = ckpt.get("optimizer_type")
+        cur_optim = type(optimizer).__name__
+        if saved_optim is not None and saved_optim != cur_optim:
+            print(f"  [warn] optimizer 種別が不一致 (保存={saved_optim} / 現在={cur_optim})。"
+                  "optimizer state を読み込まずリセットします（resume では --optim8bit の有無を"
+                  "揃えると momentum も継続できます）。")
+        else:
+            try:
+                optimizer.load_state_dict(ckpt["optimizer_state"])
+            except Exception as _oe:  # noqa: BLE001
+                print(f"  [warn] optimizer state の読込に失敗 ({_oe})。リセットして継続します。")
     if "scheduler_state" in ckpt:
         scheduler.load_state_dict(ckpt["scheduler_state"])
     else:

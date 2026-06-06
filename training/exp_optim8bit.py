@@ -33,6 +33,20 @@ from training.finance_pretrain import make_optimizer
 from training.eval_perplexity import load_model
 
 
+def _load_cfg(ckpt_path, allow_unsafe):
+    """checkpoint から cfg だけ読む（モデルを VRAM に載せない）。"""
+    try:
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    except Exception:
+        if not allow_unsafe:
+            raise RuntimeError(
+                f"{ckpt_path} を weights_only=True で読めません。"
+                "信頼できる checkpoint なら --allow_unsafe_checkpoint を付けてください。")
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    from bushido_mythos import MythosConfig
+    return MythosConfig(**ck["cfg"])
+
+
 def _random_batches(n, B, T, vocab, device, seed=0):
     g = torch.Generator().manual_seed(seed)
     out = []
@@ -80,8 +94,8 @@ def main():
     if device.type != "cuda":
         print("[note] CUDA 無し → 8-bit は通常 AdamW にフォールバックします（差は出ません）。")
 
-    # モデル param 数（理論メモリ算出用）
-    _, cfg0 = load_model(args.ckpt, device, allow_unsafe=args.allow_unsafe_checkpoint)
+    # cfg だけ軽量読込（モデルを VRAM に残さない → ピークメモリ測定を汚さない）
+    cfg0 = _load_cfg(args.ckpt, args.allow_unsafe_checkpoint)
     nparams = None
 
     batches = _random_batches(args.steps, args.batch_size, args.seq_len, cfg0.vocab_size, device)

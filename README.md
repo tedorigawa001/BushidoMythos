@@ -390,6 +390,7 @@ python training/finance_pretrain.py \
 | `--dtype` | `auto` | `auto` = bfloat16 on Ampere+ (A100), float16 on T4/V100, float32 on CPU/MPS |
 | `--compile` | `False` | Uses `torch.compile()` for roughly 20-40% speedup on Ampere+; unsupported environments are skipped automatically |
 | `--grad_checkpoint` | `False` | Enable gradient checkpointing in the recurrent loop. Reduces activation memory in proportion to loop depth (larger effect with more loops) at the cost of ~30-40% extra compute |
+| `--optim8bit` | `False` | Use bitsandbytes 8-bit AdamW (optimizer states 8→2 bytes/param, near-lossless). Requires CUDA + `pip install bitsandbytes`; falls back to standard AdamW if unavailable. Resume must use the same setting (a mismatch resets optimizer state with a warning) |
 | `--mem_log_every` | `100` | Log VRAM stats (`alloc` / `reserved` / `peak` / `frag`) every N steps. Helps diagnose OOM root cause. `0` = disable |
 | `--loop_schedule` | `off` | Recurrent-depth control (experimental). `off` = model default / `fixed` = pin `n_loops` to `max_loop_iters` (clean baseline) / `curriculum` = phase-based variable recurrence (see below) |
 | `--loop_tail_max` | `12` | `curriculum`: max loops in the upward tail (Phase 2+). Set the base checkpoint's `max_loop_iters` to this value so the tail gets its own depth-LoRA |
