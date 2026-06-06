@@ -614,6 +614,27 @@ def build_trading_methodology_sft(
 # LR schedule
 # ──────────────────────────────────────────────────────────────
 
+def make_optimizer(params, lr: float, optim8bit: bool = False):
+    """AdamW を作る。optim8bit=True かつ bitsandbytes/CUDA が使えれば 8-bit Adam。
+
+    8-bit Adam はオプティマイザ状態(m, v)を block-wise に 8-bit 量子化し、
+    fp32 の 8 byte/param を ~2 byte/param に削減する(ほぼ無損失)。使えない環境
+    (CUDA/bitsandbytes 無し)では通常 AdamW に安全にフォールバックする。
+    """
+    kw = dict(lr=lr, betas=(0.9, 0.95), weight_decay=0.1, eps=1e-8)
+    if optim8bit:
+        try:
+            import bitsandbytes as bnb
+            if not torch.cuda.is_available():
+                raise RuntimeError("bitsandbytes 8-bit optimizer は CUDA が必要です")
+            print("Optimizer: bitsandbytes AdamW8bit (optimizer states in 8-bit)")
+            return bnb.optim.AdamW8bit(params, **kw)
+        except Exception as e:
+            print(f"  [warn] 8-bit optimizer 利用不可 ({e}); 通常 AdamW にフォールバック")
+    print("Optimizer: torch.optim.AdamW (fp32 states)")
+    return AdamW(params, **kw)
+
+
 def lr_lambda(step: int, warmup: int, total: int, min_lr_ratio: float = 0.1) -> float:
     if step < warmup:
         return step / max(1, warmup)
@@ -1093,13 +1114,8 @@ def train(args: argparse.Namespace) -> None:
     p5_total = p4_total + args.phase5_steps
 
     # ── Optimizer ─────────────────────────────────────────────
-    optimizer = AdamW(
-        model.parameters(),
-        lr=args.lr,
-        betas=(0.9, 0.95),
-        weight_decay=0.1,
-        eps=1e-8,
-    )
+    optimizer = make_optimizer(model.parameters(), args.lr,
+                               optim8bit=getattr(args, "optim8bit", False))
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lambda step: lr_lambda(step, args.warmup_steps, p5_total),
@@ -1320,6 +1336,10 @@ def parse_args() -> argparse.Namespace:
                    help="Enable gradient checkpointing in the recurrent loop. "
                         "Reduces VRAM ~proportionally to loop depth (e.g. 7x for 8 loops) "
                         "at the cost of ~30-40%% extra compute. Recommended when OOM.")
+    p.add_argument("--optim8bit", action="store_true",
+                   help="bitsandbytes の 8-bit AdamW を使う（オプティマイザ状態を 8-bit 量子化、"
+                        "8→2 byte/param に削減・ほぼ無損失）。CUDA/bitsandbytes が無い場合は"
+                        "通常 AdamW に自動フォールバック")
 
     # Loop curriculum (experimental)
     p.add_argument("--loop_schedule", choices=["off", "fixed", "curriculum"], default="off",
