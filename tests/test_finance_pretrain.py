@@ -34,6 +34,7 @@ from training.finance_pretrain import (
     _vram_str,
     run_phase,
     _cycle_batches,
+    make_optimizer,
 )
 from chat import find_latest_ckpt
 from bushido_mythos import MythosConfig, BushidoMythos
@@ -666,6 +667,28 @@ class TestMemoryReplay:
     def test_replay_decision_is_deterministic_across_runs(self):
         # 同じ seed/step なら replay 判定系列が一致（resume 安全）
         assert self._run(0.5) == self._run(0.5)
+
+
+class TestMakeOptimizer:
+    """make_optimizer: fp32 AdamW by default; safe fallback for 8-bit without CUDA/bnb."""
+
+    def _params(self):
+        return list(torch.nn.Linear(8, 8).parameters())
+
+    def test_default_is_adamw(self):
+        opt = make_optimizer(self._params(), lr=1e-4, optim8bit=False)
+        assert type(opt).__name__ == "AdamW"
+
+    def test_8bit_falls_back_without_cuda(self):
+        # CPU 環境では bitsandbytes 8-bit は使えず、通常 AdamW にフォールバックする
+        opt = make_optimizer(self._params(), lr=1e-4, optim8bit=True)
+        assert type(opt).__name__ == "AdamW"  # クラッシュせずフォールバック
+
+    def test_optimizer_can_step(self):
+        params = self._params()
+        opt = make_optimizer(params, lr=1e-3, optim8bit=True)
+        params[0].sum().backward()
+        opt.step()  # 例外が出ないこと
 
 
 if __name__ == "__main__":
