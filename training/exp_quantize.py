@@ -32,6 +32,17 @@ sys.path.insert(0, str(repo_root))
 from training.eval_perplexity import (
     load_model, load_wikitext103, _build_gpt2_tokenizer, compute_perplexity,
 )
+from training.finance_pretrain import _CACHE_VERSION
+
+
+def _load_token_ids(cache_dir, name, vocab, cap=200_000):
+    """トークンキャッシュから評価用 1-D id を得る(先頭 cap 個のみ常駐)。"""
+    cp = Path(cache_dir) / f"{name}_{vocab}_{_CACHE_VERSION}.pt"
+    if not cp.exists():
+        return None
+    obj = torch.load(cp, weights_only=True)
+    ids = obj["ids"] if isinstance(obj, dict) else obj
+    return ids[:cap].clone()
 
 
 def _state_dict_mb(model) -> float:
@@ -65,6 +76,9 @@ def main():
     p.add_argument("--ckpt", default="checkpoints/finance_a100_v2/phase1_final.pt")
     p.add_argument("--split", default="validation", choices=["validation", "test"])
     p.add_argument("--eval_max_chunks", type=int, default=40)
+    p.add_argument("--finance_eval", default="financial_news_gpt2",
+                   help="金融 held-out 評価のキャッシュ名(無ければ金融評価をスキップ)")
+    p.add_argument("--cache_dir", default=".cache")
     p.add_argument("--allow_unsafe_checkpoint", action="store_true")
     args = p.parse_args()
 
@@ -81,27 +95,46 @@ def main():
     n_lin = _count_linear(model)
     nparams = sum(p.numel() for p in model.parameters())
     sz32 = _state_dict_mb(model)
-    ppl32 = _eval_ppl(model, cfg, wt_ids, device, args.eval_max_chunks)
-    print(f"  params={nparams/1e6:.1f}M  Linear層={n_lin}  size={sz32:.0f}MB  WikiText PPL={ppl32:.2f}")
+
+    # 金融 held-out(学習に未使用の財務テキスト)。キャッシュが無ければスキップ。
+    fin_ids = _load_token_ids(args.cache_dir, args.finance_eval, cfg.vocab_size)
+    if fin_ids is None:
+        print(f"  [note] 金融 held-out キャッシュ無し ({args.finance_eval}); WikiText のみ評価")
+
+    wt32 = _eval_ppl(model, cfg, wt_ids, device, args.eval_max_chunks)
+    fin32 = _eval_ppl(model, cfg, fin_ids, device, args.eval_max_chunks) if fin_ids is not None else None
+    print(f"  params={nparams/1e6:.1f}M  Linear層={n_lin}  size={sz32:.0f}MB  "
+          f"WikiText PPL={wt32:.2f}" + (f"  finance PPL={fin32:.2f}" if fin32 else ""))
 
     # ── INT8 dynamic ──────────────────────────────────────────
     print("\n=== INT8 dynamic quantization ===")
     qmodel = _quantize_dynamic_int8(model)
     sz8 = _state_dict_mb(qmodel)
-    ppl8 = _eval_ppl(qmodel, cfg, wt_ids, device, args.eval_max_chunks)
-    print(f"  size={sz8:.0f}MB  WikiText PPL={ppl8:.2f}")
+    wt8 = _eval_ppl(qmodel, cfg, wt_ids, device, args.eval_max_chunks)
+    fin8 = _eval_ppl(qmodel, cfg, fin_ids, device, args.eval_max_chunks) if fin_ids is not None else None
+    print(f"  size={sz8:.0f}MB  WikiText PPL={wt8:.2f}" + (f"  finance PPL={fin8:.2f}" if fin8 else ""))
 
     # ── サマリ ───────────────────────────────────────────────
-    print("\n" + "=" * 60)
+    def _pct(a, b):
+        return f"{(b - a) / a * 100:+.1f}%"
+    print("\n" + "=" * 64)
     print(f"  推論量子化 (INT8 dynamic) — params={nparams/1e6:.1f}M, Linear={n_lin}")
-    print("=" * 60)
-    print(f"  {'':<10}{'size MB':>10}{'WikiText PPL':>14}")
-    print(f"  {'fp32':<10}{sz32:>10.0f}{ppl32:>14.2f}")
-    print(f"  {'INT8':<10}{sz8:>10.0f}{ppl8:>14.2f}")
+    print("=" * 64)
+    hdr = f"  {'':<8}{'size MB':>10}{'WikiText↓':>12}"
+    if fin32:
+        hdr += f"{'finance↓':>12}"
+    print(hdr)
+    row32 = f"  {'fp32':<8}{sz32:>10.0f}{wt32:>12.2f}"
+    row8 = f"  {'INT8':<8}{sz8:>10.0f}{wt8:>12.2f}"
+    if fin32:
+        row32 += f"{fin32:>12.2f}"
+        row8 += f"{fin8:>12.2f}"
+    print(row32); print(row8)
     print(f"  サイズ削減: {sz32 - sz8:.0f}MB ({(1 - sz8/sz32)*100:.0f}%)")
-    ppl_delta_pct = (ppl8 - ppl32) / ppl32 * 100
-    print(f"  PPL 変化: {ppl32:.2f} → {ppl8:.2f} ({ppl_delta_pct:+.1f}%)")
-    print("=" * 60)
+    print(f"  WikiText PPL: {wt32:.2f} → {wt8:.2f} ({_pct(wt32, wt8)})")
+    if fin32:
+        print(f"  finance  PPL: {fin32:.2f} → {fin8:.2f} ({_pct(fin32, fin8)})")
+    print("=" * 64)
     print("  注: nn.Embedding は dynamic quant 対象外(埋め込みは fp32 のまま)。")
     print("      部分評価(max_chunks)。GPU 推論で使うなら別方式(bitsandbytes/GPTQ等)。")
 
