@@ -53,8 +53,16 @@ def _quantize(model, quant_names):
     return quantize_dynamic(model, set(quant_names), dtype=torch.qint8)
 
 
+_FORMAT = "mixed_int8_dynamic_v1"
+
+
 def _build_mixed_from_payload(payload, device):
     """保存ペイロードから混合精度モデルを再構築してロードする(load 経路)。"""
+    fmt = payload.get("format")
+    if fmt != _FORMAT:
+        raise ValueError(
+            f"未知の format: {fmt!r}(期待 {_FORMAT!r})。"
+            "別バージョン/別形式の checkpoint の可能性があります。")
     cfg = MythosConfig(**payload["cfg"])
     model = BushidoMythos(cfg).to(device)
     model.eval()
@@ -64,12 +72,31 @@ def _build_mixed_from_payload(payload, device):
     return qmodel, cfg
 
 
+def load_mixed_int8(path, device=torch.device("cpu"), trusted=False):
+    """混合精度 INT8 モデルをロードする(安全側=既定では読まない)。
+
+    量子化 state には torch.qint8 等が含まれ weights_only=True で読めないため、
+    weights_only=False(=pickle・任意コード実行リスク)が必須。自分で作成した
+    信頼できる checkpoint のみ trusted=True で明示的に許可すること。
+
+    Returns: (qmodel, cfg)
+    """
+    if not trusted:
+        raise RuntimeError(
+            f"{path!r} の読み込みには weights_only=False(pickle)が必要で、任意コード"
+            "実行のリスクがあります。自分で作成した信頼できる checkpoint の場合のみ "
+            "load_mixed_int8(..., trusted=True) を指定してください。")
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    return _build_mixed_from_payload(payload, device)
+
+
 def main():
     p = argparse.ArgumentParser(description="混合精度 INT8 の export/load")
     p.add_argument("--ckpt", default="checkpoints/finance_a100_v2/phase5_final.pt")
     p.add_argument("--out", default="checkpoints/mixed_int8.pt")
     p.add_argument("--keep_fp32", default="recurrent.block.attn.kv_down",
-                   help="fp32 に残す層名の substring(カンマ区切り可)")
+                   help="fp32 に残す層名の substring(カンマ区切り可)。"
+                        "部分一致なので、出力される 'keep fp32 layers' を必ず確認すること")
     p.add_argument("--verify", action="store_true",
                    help="保存→再ロードの roundtrip で forward 一致を確認")
     p.add_argument("--allow_unsafe_checkpoint", action="store_true")
@@ -109,8 +136,7 @@ def main():
     # 4) roundtrip 検証
     if args.verify:
         print("\n[verify] 再ロードして forward 一致を確認 …")
-        reload_payload = torch.load(out, map_location="cpu", weights_only=False)
-        qmodel2, _ = _build_mixed_from_payload(reload_payload, device)
+        qmodel2, _ = load_mixed_int8(out, device, trusted=True)  # 自作=trusted
         torch.manual_seed(0)
         x = torch.randint(0, cfg.vocab_size, (1, 32))
         with torch.no_grad():
@@ -121,7 +147,7 @@ def main():
         print(f"  forward 最大差: {max_diff:.2e}  → {'OK(一致)' if ok else 'NG(不一致)'}")
         if not ok:
             sys.exit(1)
-    print("\nロード方法: _build_mixed_from_payload(torch.load(out, weights_only=False), device)")
+    print("\nロード方法: load_mixed_int8(out, device, trusted=True)  # 自作の信頼できる ckpt のみ")
 
 
 if __name__ == "__main__":
