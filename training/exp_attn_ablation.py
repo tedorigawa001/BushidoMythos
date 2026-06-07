@@ -33,12 +33,16 @@ from training.exp_quantize_ablation import (
     _state_dict_mb, _quantize_names, _eval_ppl, _load_token_ids,
 )
 
-# attention 内 sub-group(名前で判定)
+# attention 内 sub-group(名前で判定)。MLA(q_down/q_up/kv_down/kv_up)と
+# GQA(wq/wk/wv/wo)の両命名に対応。
+# 注: "attn.q_up_rope (RoPE)" は "attn.q (q-side)" の部分集合(重複あり)。
 SUBGROUPS = {
     "attn.wo (out_proj)":        lambda n: ".attn.wo" in n,
-    "attn.q (q_down/up)":        lambda n: (".attn.q_down" in n or ".attn.q_up" in n),
-    "attn.kv (kv_down/up)":      lambda n: (".attn.kv_down" in n or ".attn.kv_up" in n),
-    "attn.q_up_rope (RoPE)":     lambda n: ".attn.q_up_rope" in n,
+    "attn.q (q-side)":           lambda n: (".attn.q_down" in n or ".attn.q_up" in n
+                                            or ".attn.wq" in n),
+    "attn.kv (kv-side)":         lambda n: (".attn.kv_down" in n or ".attn.kv_up" in n
+                                            or ".attn.wk" in n or ".attn.wv" in n),
+    "attn.q_up_rope (RoPE,⊂q)":  lambda n: ".attn.q_up_rope" in n,
     "recurrent attn (loop)":     lambda n: n.startswith("recurrent.block.attn."),
     "prelude+coda attn":         lambda n: (".attn." in n) and (not n.startswith("recurrent.")),
     "ALL attn (reference)":      lambda n: ".attn." in n,
@@ -69,6 +73,10 @@ def main():
     configs = [("fp32 (baseline)", set()), ("INT8 (all)", all_set)]
     for g, pred in SUBGROUPS.items():
         keep = {n for n in linear_names if pred(n)}
+        if not keep:
+            # 0 件 → このアーキ(命名)に該当 module が無い。結果は全INT8と同じになるので注意。
+            print(f"  [warn] subgroup '{g}' matched 0 Linear modules "
+                  "(このアーキでは該当なし; 結果は INT8 全部と同じ)")
         configs.append((f"INT8 except {g}", all_set - keep, len(keep)))
 
     results = []
@@ -94,6 +102,7 @@ def main():
     print("=" * 74)
     print(f"  全INT8: {fp32_fin:.1f} → {int8_fin:.1f} ({(int8_fin-fp32_fin)/fp32_fin*100:+.1f}%)")
     print("  回復が大きい G ほど主犯。recurrent-attn が ALL-attn に迫れば『ループ増幅』を支持。")
+    print("  注: 'q_up_rope (RoPE)' は 'attn.q (q-side)' の部分集合(重複)。")
     print("  注: 部分評価(max_chunks)。財務評価は Phase3+ で学習分布と重なりうる。")
 
 
