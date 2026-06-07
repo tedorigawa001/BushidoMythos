@@ -21,21 +21,21 @@ import torch.nn as nn
 repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
-from training.eval_perplexity import load_model
+from training.eval_perplexity import (
+    load_model, load_wikitext103, _build_gpt2_tokenizer,
+)
 from training.exp_quantize_ablation import (
     _state_dict_mb, _quantize_names, _eval_ppl, _load_token_ids,
 )
 
 
-# fp32 に残す候補(段階的に縮小)。MLA(kv_down/kv_up)対応。
+# fp32 に残す候補(要点に絞った最小化系列)。MLA(kv_down/kv_up)対応。
 KEEP_FP32 = {
     "all attn":              lambda n: ".attn." in n,
-    "recurrent attn":        lambda n: n.startswith("recurrent.block.attn."),
-    "all KV (kv_down/up)":   lambda n: (".attn.kv_down" in n or ".attn.kv_up" in n),
-    "recurrent KV (minimal)":lambda n: n.startswith("recurrent.block.attn.") and
+    "recurrent KV (2層)":    lambda n: n.startswith("recurrent.block.attn.") and
                                        (".kv_down" in n or ".kv_up" in n),
-    "recurrent kv_up only":  lambda n: n == "recurrent.block.attn.kv_up",
     "recurrent kv_down only":lambda n: n == "recurrent.block.attn.kv_down",
+    "recurrent kv_up only":  lambda n: n == "recurrent.block.attn.kv_up",
 }
 
 
@@ -45,6 +45,8 @@ def main():
     p.add_argument("--eval_max_chunks", type=int, default=30)
     p.add_argument("--finance_eval", default="financial_news_gpt2")
     p.add_argument("--cache_dir", default=".cache")
+    p.add_argument("--also_wikitext", action="store_true",
+                   help="WikiText(汎用)PPL も測り、回復が finance 特有でないことを確認する")
     p.add_argument("--allow_unsafe_checkpoint", action="store_true")
     args = p.parse_args()
     if args.eval_max_chunks <= 0:
@@ -59,6 +61,11 @@ def main():
     fin_ids = _load_token_ids(args.cache_dir, args.finance_eval, cfg.vocab_size)
     if fin_ids is None:
         print("[error] 金融評価キャッシュが無い"); sys.exit(1)
+
+    wt_ids = None
+    if args.also_wikitext:
+        print("\n[Eval data] WikiText-103 validation(汎用)…")
+        wt_ids = load_wikitext103("validation", _build_gpt2_tokenizer(), 1024)
 
     def fp32_params(keep_names):
         return sum(sum(x.numel() for x in linear[n].parameters()) for n in keep_names)
@@ -77,26 +84,39 @@ def main():
         qmodel = _quantize_names(model, qnames)
         sz = _state_dict_mb(qmodel)
         fin = _eval_ppl(qmodel, cfg, fin_ids, device, args.eval_max_chunks)
+        wt = _eval_ppl(qmodel, cfg, wt_ids, device, args.eval_max_chunks) if wt_ids is not None else None
         kp = fp32_params(keep) / 1e6
-        results.append((label, len(keep), kp, sz, fin))
-        print(f"  {label:<28} fp32層={len(keep):>3} ({kp:.2f}M)  size={sz:>4.0f}MB  finance PPL={fin:.2f}")
+        results.append((label, len(keep), kp, sz, fin, wt))
+        msg = f"  {label:<28} fp32層={len(keep):>3} ({kp:.2f}M)  size={sz:>4.0f}MB  finance={fin:.2f}"
+        if wt is not None:
+            msg += f"  WikiText={wt:.2f}"
+        print(msg)
         del qmodel
 
-    fp32_fin = results[0][4]
-    int8_fin = results[1][4]
-    recover = int8_fin - fp32_fin  # 全劣化幅
-    print("\n" + "=" * 78)
-    print("  最小混合精度 — finance PPL(低いほど良い)。回復率 = INT8からどれだけ戻したか")
-    print("=" * 78)
-    print(f"  {'config':<28}{'fp32層':>7}{'fp32 M':>8}{'size':>7}{'PPL':>9}{'Δfp32':>8}{'回復率':>8}")
-    for label, nk, kp, sz, fin in results:
-        d = (fin - fp32_fin) / fp32_fin * 100
-        rec = (int8_fin - fin) / recover * 100 if recover > 0 else 0.0
-        print(f"  {label:<28}{nk:>7}{kp:>8.2f}{sz:>6.0f}M{fin:>9.2f}{d:>7.1f}%{rec:>7.0f}%")
-    print("=" * 78)
-    print(f"  全INT8: {fp32_fin:.1f} → {int8_fin:.1f} ({(int8_fin-fp32_fin)/fp32_fin*100:+.1f}%)")
-    print("  回復率: (INT8_PPL − config_PPL) / (INT8_PPL − fp32_PPL)。100%=fp32相当まで回復。")
-    print("  狙い: 最小の fp32 層数/params で高い回復率を出す構成。")
+    fp32_fin, int8_fin = results[0][4], results[1][4]
+    rec_fin = int8_fin - fp32_fin
+    fp32_wt = results[0][5]; int8_wt = results[1][5]
+    rec_wt = (int8_wt - fp32_wt) if wt_ids is not None else None
+
+    print("\n" + "=" * 86)
+    print("  最小混合精度 — PPL(低いほど良い)/ 回復率 = INT8 からどれだけ fp32 側へ戻したか")
+    print("=" * 86)
+    head = f"  {'config':<28}{'fp32 M':>8}{'finance':>9}{'回復':>6}"
+    if wt_ids is not None:
+        head += f"{'WikiText':>10}{'回復':>6}"
+    print(head)
+    for label, nk, kp, sz, fin, wt in results:
+        fr = (int8_fin - fin) / rec_fin * 100 if rec_fin > 0 else 0.0
+        line = f"  {label:<28}{kp:>8.2f}{fin:>9.2f}{fr:>5.0f}%"
+        if wt is not None:
+            wr = (int8_wt - wt) / rec_wt * 100 if rec_wt and rec_wt > 0 else 0.0
+            line += f"{wt:>10.2f}{wr:>5.0f}%"
+        print(line)
+    print("=" * 86)
+    print(f"  全INT8 finance: {fp32_fin:.1f}→{int8_fin:.1f} ({(int8_fin-fp32_fin)/fp32_fin*100:+.1f}%)"
+          + (f" / WikiText: {fp32_wt:.1f}→{int8_wt:.1f} ({(int8_wt-fp32_wt)/fp32_wt*100:+.1f}%)" if wt_ids is not None else ""))
+    print("  狙い: 最小の fp32 params で高い回復率。finance/WikiText 両方で効けば層特有(ドメイン非依存)。")
+    print("  注: 部分評価(max_chunks)・n=1。state_dict サイズは実行時メモリ/速度とは別。")
 
 
 if __name__ == "__main__":
