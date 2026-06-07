@@ -279,7 +279,8 @@ def generate(
 # ---------------------------------------------------------------------------
 
 def chat_loop(args: argparse.Namespace) -> None:
-    device = get_device()
+    # 混合 INT8(make_mixed_int8.py 製)は dynamic 量子化のため CPU 実行
+    device = torch.device("cpu") if args.mixed_int8 else get_device()
     print(f"Device: {device}\n")
 
     ckpt_path = args.ckpt or find_latest_ckpt(args.ckpt_dir)
@@ -287,7 +288,17 @@ def chat_loop(args: argparse.Namespace) -> None:
         print(f"エラー: {args.ckpt_dir} にチェックポイントが見つかりません。--ckpt で指定してください。")
         sys.exit(1)
 
-    model, cfg = load_model(ckpt_path, device, allow_unsafe=args.allow_unsafe_checkpoint)
+    if args.mixed_int8:
+        # 混合精度 INT8 モデル(量子化 state を含む)を安全ロード
+        from training.make_mixed_int8 import load_mixed_int8
+        if not args.allow_unsafe_checkpoint:
+            print("エラー: --mixed_int8 は pickle ベースのロード(weights_only=False)が必要です。"
+                  "自作の信頼できる checkpoint のみ --allow_unsafe_checkpoint を併用してください。")
+            sys.exit(1)
+        model, cfg = load_mixed_int8(ckpt_path, device, trusted=True)
+        print(f"Loaded mixed-INT8: {ckpt_path}")
+    else:
+        model, cfg = load_model(ckpt_path, device, allow_unsafe=args.allow_unsafe_checkpoint)
     tokenizer = build_tokenizer(cfg.vocab_size, mode=args.tokenizer)
 
     # top_k の上限を vocab_size に制限
@@ -359,6 +370,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--allow_unsafe_checkpoint", action="store_true",
                    help="weights_only=False で checkpoint をロードする"
                         "（pickle ベース。自分で作成した trusted checkpoint のみ使用）")
+    p.add_argument("--mixed_int8", action="store_true",
+                   help="make_mixed_int8.py で作った混合精度 INT8 モデルをロードする"
+                        "（CPU 実行。--allow_unsafe_checkpoint の併用が必須）")
     args = p.parse_args()
 
     # バリデーション

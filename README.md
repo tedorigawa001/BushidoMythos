@@ -638,6 +638,37 @@ A Markdown report (per-prompt outputs + aggregate tables) is written to `--out` 
 
 ---
 
+## Inference Quantization (INT8, experimental)
+
+Two separate concerns — keep them apart (see also `--optim8bit`, which is the *training* counterpart that compresses optimizer states):
+
+- **8-bit optimizer** (`--optim8bit`, training): compresses Adam states, near-lossless.
+- **INT8 quantization** (here, inference): compresses model weights.
+
+Measure INT8 dynamic quantization (CPU, `nn.Linear` → INT8, no calibration) vs fp32:
+
+```bash
+# fp32 vs INT8 on WikiText (general) + a finance-domain set
+python3.9 training/exp_quantize.py --ckpt checkpoints/finance_a100_v2/phase5_final.pt --eval_max_chunks 30
+```
+
+**Finding (this architecture):** full INT8 hits the finance-specialized model hard (finance PPL **+46.6%**). An ablation (`training/exp_quantize_ablation.py`, `exp_attn_ablation.py`, `exp_mixed_precision.py`) traced it to a **single layer — the MLA K/V down-projection in the recurrent block (`recurrent.block.attn.kv_down`)**: compression is precision-critical and the recurrent loop amplifies the error. Keeping just that one layer (0.07% of params) in fp32 recovers ~60% of the loss (finance) / ~35% (WikiText) at the full INT8 size.
+
+**Mixed-precision export/load** (`training/make_mixed_int8.py`): produce a deployable model that is INT8 everywhere except a chosen fp32 layer.
+
+```bash
+# build + verify roundtrip (quantize all except recurrent kv_down)
+python3.9 training/make_mixed_int8.py --ckpt checkpoints/finance_a100_v2/phase5_final.pt \
+  --out checkpoints/phase5_mixed_int8.pt --verify
+
+# run it in chat (CPU; mixed-INT8 needs pickle load -> trusted only)
+python3.9 chat.py --mixed_int8 --allow_unsafe_checkpoint --ckpt checkpoints/phase5_mixed_int8.pt
+```
+
+> **Notes:** INT8 dynamic runs on CPU only; for GPU use GPTQ/AWQ (these target standard architectures and don't support this custom RDT/MoE out of the box). Reported "size" is the serialized `state_dict`, not runtime memory/speed. The mixed-INT8 file needs `weights_only=False` to load (quantized dtypes), so `load_mixed_int8(..., trusted=True)` / `--allow_unsafe_checkpoint` is required and the loader validates the payload format. Numbers above are partial-eval, n=1; degradation is **model-dependent** (much smaller on a general/undertrained checkpoint) — measure on your actual deployment model.
+
+---
+
 ## Documentation
 
 | Page | Content |
