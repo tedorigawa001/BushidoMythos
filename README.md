@@ -396,6 +396,7 @@ python training/finance_pretrain.py \
 | `--loop_tail_max` | `12` | `curriculum`: max loops in the upward tail (Phase 2+). Set the base checkpoint's `max_loop_iters` to this value so the tail gets its own depth-LoRA |
 | `--loop_tail_p` | `0.2` | `curriculum`: probability of sampling the tail (`hi+1..loop_tail_max`) |
 | `--loop_seed` | `0` | `curriculum`: sampler seed; deterministic per `(seed, step)` so it is resume-safe |
+| `--replay_ratio` | `0.0` | Memory replay (anti-forgetting, experimental): in Phase 2+, replace this fraction of batches with a general-language (WikiText-103) anchor. Replay *replaces* (not adds) batches, so effective domain steps shrink — raise total steps to compensate. Pilot: 20% replay cut catastrophic forgetting ~89% while finance held-out PPL improved; sweet spot 5–10% (see `training/exp_replay_pilot.py`) |
 | `--lr` | `1e-4` | Peak learning rate |
 | `--save_every` | `2000` | Checkpoint interval in steps |
 
