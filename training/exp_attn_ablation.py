@@ -28,10 +28,27 @@ import torch.nn as nn
 repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
-from training.eval_perplexity import load_model
+from training.eval_perplexity import (
+    load_model, load_wikitext103, _build_gpt2_tokenizer,
+)
 from training.exp_quantize_ablation import (
     _state_dict_mb, _quantize_names, _eval_ppl, _load_token_ids,
 )
+
+
+def _load_eval_ids(args, cfg):
+    """評価トークン列を返す。finance=cache, wikitext=in-distribution(DL)。
+
+    Phase1(WikiText)で同一学習した MLA/GQA を比べる場合は wikitext(学習分布内)
+    の方が相対劣化の信号がクリーン。finance は元発見と同条件(domain 内)。
+    """
+    if args.eval_set == "wikitext":
+        tok = _build_gpt2_tokenizer()
+        return load_wikitext103("test", tok, seq_len=1024)
+    ids = _load_token_ids(args.cache_dir, args.finance_eval, cfg.vocab_size)
+    if ids is None:
+        print(f"[error] 金融評価キャッシュが無い: {args.finance_eval}"); sys.exit(1)
+    return ids
 
 # attention 内 sub-group(名前で判定)。MLA(q_down/q_up/kv_down/kv_up)と
 # GQA(wq/wk/wv/wo)の両命名に対応。
@@ -42,6 +59,23 @@ SUBGROUPS = {
                                             or ".attn.wq" in n),
     "attn.kv (kv-side)":         lambda n: (".attn.kv_down" in n or ".attn.kv_up" in n
                                             or ".attn.wk" in n or ".attn.wv" in n),
+    # --- H1(MLA圧縮固有)vs H2(KV経路一般)の切り分け用に KV 経路を分離 ---
+    # MLA: kv_down=低ランク圧縮(主犯候補) / kv_up=展開。GQA: wk/wv=圧縮なしの直接射影。
+    # 該当しないアーキでは 0-match → 全INT8と同じ(warn が出る)。
+    #
+    # 注: 下の substring 版は prelude+recurrent+coda の**全 attention stage**に match する
+    # (= 3層分)。元発見の主犯は recurrent.block.attn.kv_down の**1層**なので、
+    # 「ループ内 kv_down が主犯」か「全 stage の kv_down 系が効く」かを切り分けるため、
+    # recurrent 限定の**完全一致**版も別に用意する。
+    "attn.kv_down (all stages)":   lambda n: ".attn.kv_down" in n,
+    "attn.kv_up (all stages)":     lambda n: ".attn.kv_up" in n,
+    "attn.wk (all stages)":        lambda n: ".attn.wk" in n,
+    "attn.wv (all stages)":        lambda n: ".attn.wv" in n,
+    # recurrent ループ内の単層のみ(元発見の主犯 = この1層)
+    "recurrent kv_down (MLA,1層)": lambda n: n == "recurrent.block.attn.kv_down",
+    "recurrent kv_up (MLA,1層)":   lambda n: n == "recurrent.block.attn.kv_up",
+    "recurrent wk (GQA,1層)":      lambda n: n == "recurrent.block.attn.wk",
+    "recurrent wv (GQA,1層)":      lambda n: n == "recurrent.block.attn.wv",
     "attn.q_up_rope (RoPE,⊂q)":  lambda n: ".attn.q_up_rope" in n,
     "recurrent attn (loop)":     lambda n: n.startswith("recurrent.block.attn."),
     "prelude+coda attn":         lambda n: (".attn." in n) and (not n.startswith("recurrent.")),
@@ -54,6 +88,9 @@ def main():
     p.add_argument("--ckpt", default="checkpoints/finance_a100_v2/phase5_final.pt")
     p.add_argument("--eval_max_chunks", type=int, default=30)
     p.add_argument("--finance_eval", default="financial_news_gpt2")
+    p.add_argument("--eval_set", choices=["finance", "wikitext"], default="finance",
+                   help="評価分布。finance=cache(元発見と同条件)/ "
+                        "wikitext=in-distribution(Phase1学習の MLA vs GQA 比較向け)")
     p.add_argument("--cache_dir", default=".cache")
     p.add_argument("--allow_unsafe_checkpoint", action="store_true")
     args = p.parse_args()
@@ -66,9 +103,8 @@ def main():
     linear_names = [n for n, m in model.named_modules() if isinstance(m, nn.Linear)]
     all_set = set(linear_names)
 
-    fin_ids = _load_token_ids(args.cache_dir, args.finance_eval, cfg.vocab_size)
-    if fin_ids is None:
-        print("[error] 金融評価キャッシュが無い"); sys.exit(1)
+    print(f"Eval set: {args.eval_set}")
+    fin_ids = _load_eval_ids(args, cfg)
 
     configs = [("fp32 (baseline)", set()), ("INT8 (all)", all_set)]
     for g, pred in SUBGROUPS.items():
@@ -87,15 +123,16 @@ def main():
         sz = _state_dict_mb(qmodel)
         fin = _eval_ppl(qmodel, cfg, fin_ids, device, args.eval_max_chunks)
         results.append((label, nkeep, sz, fin))
-        print(f"  {label:<30} keep_fp32={nkeep:>3}  size={sz:>4.0f}MB  finance PPL={fin:.2f}")
+        print(f"  {label:<30} keep_fp32={nkeep:>3}  size={sz:>4.0f}MB  {args.eval_set} PPL={fin:.2f}")
         del qmodel
 
+    ppl_col = f"{args.eval_set} PPL"
     fp32_fin = results[0][3]
     int8_fin = results[1][3]
     print("\n" + "=" * 74)
-    print("  attention 内 ablation — finance PPL(低いほど良い)")
+    print(f"  attention 内 ablation — {ppl_col}(低いほど良い)")
     print("=" * 74)
-    print(f"  {'config':<30}{'keep':>5}{'size MB':>9}{'finance PPL':>13}{'Δ vs fp32':>11}")
+    print(f"  {'config':<30}{'keep':>5}{'size MB':>9}{ppl_col:>13}{'Δ vs fp32':>11}")
     for label, nk, sz, fin in results:
         d = (fin - fp32_fin) / fp32_fin * 100
         print(f"  {label:<30}{nk:>5}{sz:>9.0f}{fin:>13.2f}{d:>10.1f}%")
@@ -103,7 +140,10 @@ def main():
     print(f"  全INT8: {fp32_fin:.1f} → {int8_fin:.1f} ({(int8_fin-fp32_fin)/fp32_fin*100:+.1f}%)")
     print("  回復が大きい G ほど主犯。recurrent-attn が ALL-attn に迫れば『ループ増幅』を支持。")
     print("  注: 'q_up_rope (RoPE)' は 'attn.q (q-side)' の部分集合(重複)。")
-    print("  注: 部分評価(max_chunks)。財務評価は Phase3+ で学習分布と重なりうる。")
+    print("  注: 部分評価(max_chunks)。finance 評価は Phase3+ で学習分布と重なりうる。")
+    print("  MLA/GQA 比較は recurrent 1層版で判定: MLA 'recurrent kv_down' vs "
+          "GQA 'recurrent wk'/'wv' の回復幅(元主犯はこの1層)。")
+    print("  'all stages' 版は prelude+recurrent+coda の3層集約なので参考値。")
 
 
 if __name__ == "__main__":

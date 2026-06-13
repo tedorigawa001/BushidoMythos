@@ -37,17 +37,19 @@ def build_config(
     n_heads: int = 12,
     expert_dim: int = 768,
     max_loop_iters: int = 8,
+    attn_type: str = "mla",
+    n_kv_heads: int = 4,
 ) -> MythosConfig:
     return MythosConfig(
         vocab_size=50257,
         dim=dim,
         n_heads=n_heads,
-        n_kv_heads=4,
+        n_kv_heads=n_kv_heads,
         max_seq_len=1024,
         max_loop_iters=max_loop_iters,
         prelude_layers=1,
         coda_layers=1,
-        attn_type="mla",
+        attn_type=attn_type,
         kv_lora_rank=64,
         q_lora_rank=192,
         qk_rope_head_dim=32,
@@ -93,9 +95,11 @@ def init_from_gpt2(model: BushidoMythos) -> None:
 
 def main(out_path: str, use_gpt2_init: bool = True,
          dim: int = 768, n_heads: int = 12, expert_dim: int = 768,
-         max_loop_iters: int = 8) -> None:
+         max_loop_iters: int = 8, attn_type: str = "mla",
+         n_kv_heads: int = 4) -> None:
     cfg = build_config(dim=dim, n_heads=n_heads, expert_dim=expert_dim,
-                       max_loop_iters=max_loop_iters)
+                       max_loop_iters=max_loop_iters, attn_type=attn_type,
+                       n_kv_heads=n_kv_heads)
 
     # GPT-2 small の埋め込み (50257×768) は dim=768 のときだけ流用可能。
     # dim が異なる構成では shape が合わないため自動でスキップする。
@@ -107,7 +111,7 @@ def main(out_path: str, use_gpt2_init: bool = True,
     n_params = sum(p.numel() for p in model.parameters())
 
     print("モデル構成:")
-    print(f"  dim={cfg.dim}  n_heads={cfg.n_heads}  n_kv_heads={cfg.n_kv_heads}")
+    print(f"  attn_type={cfg.attn_type}  dim={cfg.dim}  n_heads={cfg.n_heads}  n_kv_heads={cfg.n_kv_heads}")
     print(f"  max_seq_len={cfg.max_seq_len}  max_loop_iters={cfg.max_loop_iters}")
     print(f"  n_experts={cfg.n_experts}  expert_dim={cfg.expert_dim}")
     print(f"  loop_curriculum={cfg.loop_curriculum}")
@@ -130,7 +134,7 @@ def main(out_path: str, use_gpt2_init: bool = True,
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
             "cfg": cfg.__dict__,
-            "tag": f"A100-base-dim{cfg.dim}-{n_params/1e6:.0f}M"
+            "tag": f"A100-base-{cfg.attn_type}-dim{cfg.dim}-{n_params/1e6:.0f}M"
                    f"-loop{cfg.max_loop_iters}{'-gpt2init' if use_gpt2_init else ''}",
             "phase1_steps": 0,
             "phase2_steps": 0,
@@ -152,12 +156,19 @@ if __name__ == "__main__":
     p.add_argument("--dim", type=int, default=768,
                    help="隠れ次元 (default: 768)。768 以外では GPT-2 初期化は自動スキップ")
     p.add_argument("--n_heads", type=int, default=12,
-                   help="アテンションヘッド数 (default: 12)。dim を割り切る値にすること")
+                   help="アテンションヘッド数 (default: 12)。dim を割り切り、かつ "
+                        "n_kv_heads でも割り切れる値にすること(例 default 12 は 4 で割れる)")
+    p.add_argument("--n_kv_heads", type=int, default=4,
+                   help="KV ヘッド数 (default: 4)。n_heads はこの値で割り切れる必要あり。"
+                        "GQA の圧縮比を変えるならここを調整")
     p.add_argument("--expert_dim", type=int, default=768,
                    help="MoE エキスパート次元 (default: 768)。比例スケールなら dim と同値")
     p.add_argument("--max_loop_iters", type=int, default=8,
                    help="最大再帰ループ数 (default: 8)。loop curriculum の裾を使うなら裾の最大値(例 12)に")
+    p.add_argument("--attn_type", choices=["mla", "gqa"], default="mla",
+                   help="アテンション種別 (default: mla)。kv_down 脆弱性の MLA vs GQA 比較用に gqa を選択可")
     args = p.parse_args()
     main(args.out, use_gpt2_init=not args.no_gpt2_init,
          dim=args.dim, n_heads=args.n_heads, expert_dim=args.expert_dim,
-         max_loop_iters=args.max_loop_iters)
+         max_loop_iters=args.max_loop_iters, attn_type=args.attn_type,
+         n_kv_heads=args.n_kv_heads)
