@@ -101,6 +101,7 @@ run_one () {
       --batch_size "$BATCH" \
       --lr "$LR" \
       --warmup_steps "$WARMUP" \
+      --seed "$SEED" \
       --loop_seed "$LOOP_SEED" \
       --cache_dir "$CACHE_DIR" \
       --save_every 100000   # 中間保存を抑制(ディスク節約)

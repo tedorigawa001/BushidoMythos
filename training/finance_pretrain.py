@@ -1047,6 +1047,14 @@ def run_phase(
 # ──────────────────────────────────────────────────────────────
 
 def train(args: argparse.Namespace) -> None:
+    # 学習全体の RNG seed を起動直後に固定。data sampling の torch.randperm は
+    # generator 未指定で global RNG に依存するため、これを固定しないと別プロセスで
+    # batch 順序がずれる(MLA/GQA 比較の公平性に効く)。loop_seed は loop sampling 専用で別物。
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
     device, amp_dtype = get_device_and_dtype(args.dtype)
 
     ckpt_dir = Path(args.ckpt_dir)
@@ -1363,6 +1371,10 @@ def parse_args() -> argparse.Namespace:
                    help="curriculum 時の裾の最大ループ数 (default: 12)。base ckpt の max_loop_iters 以下推奨")
     p.add_argument("--loop_tail_p", type=float, default=0.2,
                    help="curriculum 時に裾(hi+1..tail_max)を引く確率 (default: 0.2)")
+    p.add_argument("--seed", type=int, default=42,
+                   help="学習全体の RNG seed (default: 42)。起動直後に random/torch/cuda を "
+                        "シードし、data sampling(torch.randperm)の batch 順序を決定化する。"
+                        "loop sampling 用の --loop_seed とは別物。")
     p.add_argument("--loop_seed", type=int, default=0,
                    help="loop サンプラのシード (default: 0)。step+seed で決定的・resume 安全")
 
