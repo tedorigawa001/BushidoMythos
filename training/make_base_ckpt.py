@@ -96,7 +96,12 @@ def init_from_gpt2(model: BushidoMythos) -> None:
 def main(out_path: str, use_gpt2_init: bool = True,
          dim: int = 768, n_heads: int = 12, expert_dim: int = 768,
          max_loop_iters: int = 8, attn_type: str = "mla",
-         n_kv_heads: int = 4) -> None:
+         n_kv_heads: int = 4, seed: int = 42) -> None:
+    # 重み初期化を再現可能にする。MLA/GQA 比較では同一 seed で run 間の乱数ブレを除く。
+    # 注: MLA と GQA はパラメータ構造が異なる(q_down/kv_down… vs wq/wk/wv)ため、
+    # 同一 seed でも attn 以降の RNG ストリームは分岐し「完全同一初期値」にはならない。
+    # それでも乱数ブレを抑え再現性・公平性を上げる。
+    torch.manual_seed(seed)
     cfg = build_config(dim=dim, n_heads=n_heads, expert_dim=expert_dim,
                        max_loop_iters=max_loop_iters, attn_type=attn_type,
                        n_kv_heads=n_kv_heads)
@@ -111,6 +116,7 @@ def main(out_path: str, use_gpt2_init: bool = True,
     n_params = sum(p.numel() for p in model.parameters())
 
     print("モデル構成:")
+    print(f"  seed={seed}")
     print(f"  attn_type={cfg.attn_type}  dim={cfg.dim}  n_heads={cfg.n_heads}  n_kv_heads={cfg.n_kv_heads}")
     print(f"  max_seq_len={cfg.max_seq_len}  max_loop_iters={cfg.max_loop_iters}")
     print(f"  n_experts={cfg.n_experts}  expert_dim={cfg.expert_dim}")
@@ -167,8 +173,11 @@ if __name__ == "__main__":
                    help="最大再帰ループ数 (default: 8)。loop curriculum の裾を使うなら裾の最大値(例 12)に")
     p.add_argument("--attn_type", choices=["mla", "gqa"], default="mla",
                    help="アテンション種別 (default: mla)。kv_down 脆弱性の MLA vs GQA 比較用に gqa を選択可")
+    p.add_argument("--seed", type=int, default=42,
+                   help="重み初期化 seed (default: 42)。MLA/GQA 比較では同一 seed で "
+                        "run 間の乱数ブレを除く(構造差により完全同一初期値にはならない)")
     args = p.parse_args()
     main(args.out, use_gpt2_init=not args.no_gpt2_init,
          dim=args.dim, n_heads=args.n_heads, expert_dim=args.expert_dim,
          max_loop_iters=args.max_loop_iters, attn_type=args.attn_type,
-         n_kv_heads=args.n_kv_heads)
+         n_kv_heads=args.n_kv_heads, seed=args.seed)

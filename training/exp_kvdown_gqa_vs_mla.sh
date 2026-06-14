@@ -46,8 +46,13 @@ BATCH="${BATCH:-4}"
 LR="${LR:-1e-4}"
 WARMUP="${WARMUP:-200}"
 LOOP_SEED="${LOOP_SEED:-0}"
+SEED="${SEED:-42}"              # base 重み初期化 seed。MLA/GQA で共有し run 間ブレを除く
+                                # (構造差により完全同一初期値にはならない点に注意)
 EVAL_CHUNKS="${EVAL_CHUNKS:-30}"
 CACHE_DIR="${CACHE_DIR:-.cache}"
+# 自作 checkpoint は load_model が safe-first(weights_only=True を先に試行)で読める想定。
+# 万一それが失敗する環境では ALLOW_UNSAFE=1 で weights_only=False を許可(任意コード実行リスク)。
+ALLOW_UNSAFE="${ALLOW_UNSAFE:-0}"
 
 # finance_pretrain.py の step 予算は累積式(p_total = phase1+...+phaseN steps)、
 # LR cosine は p5_total 基準。実 N step の単発フェーズにするには、対象フェーズ以外の
@@ -84,8 +89,8 @@ run_one () {
   echo "#  [$attn]  base 作成 -> 学習 -> ablation"
   echo "############################################################"
 
-  # 1) base checkpoint(--attn_type だけ変える。それ以外は同一既定)
-  "$PY" -u training/make_base_ckpt.py --attn_type "$attn" --out "$base"
+  # 1) base checkpoint(--attn_type だけ変える。seed も含め他は同一)
+  "$PY" -u training/make_base_ckpt.py --attn_type "$attn" --seed "$SEED" --out "$base"
 
   # 2) 同一条件で学習(seed/データ/steps/seq/batch/lr/warmup を共有)
   "$PY" -u training/finance_pretrain.py \
@@ -101,6 +106,10 @@ run_one () {
       --save_every 100000   # 中間保存を抑制(ディスク節約)
 
   # 3) 同じ ablation(MLA は kv_down, GQA は wk/wv のサブグループが効く)
+  #    safe-first: 既定では --allow_unsafe_checkpoint を渡さない(weights_only=True 優先)。
+  #    weights_only=True が失敗する環境のみ ALLOW_UNSAFE=1 で許可。
+  local unsafe_arg=()
+  [ "$ALLOW_UNSAFE" = "1" ] && unsafe_arg=(--allow_unsafe_checkpoint)
   echo
   echo "=== [$attn] attention ablation (eval_set=$EVAL_SET) ==="
   "$PY" -u training/exp_attn_ablation.py \
@@ -108,7 +117,7 @@ run_one () {
       --eval_max_chunks "$EVAL_CHUNKS" \
       --eval_set "$EVAL_SET" \
       --cache_dir "$CACHE_DIR" \
-      --allow_unsafe_checkpoint
+      ${unsafe_arg[@]+"${unsafe_arg[@]}"}
 }
 
 run_one mla
