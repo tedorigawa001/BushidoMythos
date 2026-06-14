@@ -25,19 +25,22 @@
 # 使い方:
 #   # 本番(Colab GPU 推奨)。STEPS は短め既定。data cache は事前に用意済みのこと。
 #   bash training/exp_kvdown_gqa_vs_mla.sh
-#   # ステップ数や出力先を変える:
-#   STEPS=3000 OUTDIR=checkpoints/kvcmp PHASE=1 bash training/exp_kvdown_gqa_vs_mla.sh
+#   # PHASE=1(WikiText 一般言語、軽い同一条件比較):
+#   STEPS=3000 PHASE=1 bash training/exp_kvdown_gqa_vs_mla.sh
+#   # PHASE=3(finance domain を重めに。kv_down 現象が再現するかの中規模確認):
+#   STEPS=6000 PHASE=3 OUTDIR=checkpoints/kvcmp_p3 bash training/exp_kvdown_gqa_vs_mla.sh
 # =============================================================================
 set -euo pipefail
 
 PY="${PY:-python3}"
 OUTDIR="${OUTDIR:-checkpoints/kvcmp}"
-STEPS="${STEPS:-3000}"          # 各アーキの学習ステップ数(短い同一条件で相対比較)
-PHASE="${PHASE:-1}"             # 学習フェーズ。1=WikiText(短い同一条件の既定)。
-                                # 注: finance_pretrain の step 予算は累積式のため、短い
-                                # 単発ランがクリーンなのは PHASE=1。finance 分布で再現
-                                # したいなら full curriculum を別途回すこと。
-EVAL_SET="${EVAL_SET:-wikitext}"  # PHASE=1(WikiText 学習)なら in-distribution の wikitext
+STEPS="${STEPS:-3000}"          # 各アーキの学習ステップ数(短い同一条件で相対比較)。
+                                # PHASE=3 で kv_down 現象を狙うなら 6000 程度を推奨。
+PHASE="${PHASE:-1}"             # 学習フェーズ。1=WikiText(一般言語)/ 3=finance domain。
+                                # 累積 step 設計に噛み合うのはこの2つ(下の case で
+                                # 対象外フェーズの steps を 0 にして実 N step に揃える)。
+# EVAL_SET 既定はフェーズ依存(下で確定): PHASE=1→wikitext / PHASE=3→finance
+EVAL_SET="${EVAL_SET:-}"
 SEQ_LEN="${SEQ_LEN:-1024}"
 BATCH="${BATCH:-4}"
 LR="${LR:-1e-4}"
@@ -46,18 +49,30 @@ LOOP_SEED="${LOOP_SEED:-0}"
 EVAL_CHUNKS="${EVAL_CHUNKS:-30}"
 CACHE_DIR="${CACHE_DIR:-.cache}"
 
-mkdir -p "$OUTDIR"
-echo "OUTDIR=$OUTDIR  STEPS=$STEPS  PHASE=$PHASE  seq=$SEQ_LEN  batch=$BATCH  lr=$LR"
+# finance_pretrain.py の step 予算は累積式(p_total = phase1+...+phaseN steps)、
+# LR cosine は p5_total 基準。実 N step の単発フェーズにするには、対象フェーズ以外の
+# *_steps を 0 にして p5_total=N に揃える(LR が N で正しく減衰する)。
+# 対応フェーズ: 1(WikiText 一般言語)/ 3(finance domain mix)。
+case "$PHASE" in
+  1)
+    PHASE_STEP_ARGS=(--phase 1 --phase1_steps "$STEPS"
+                     --phase2_steps 0 --phase3_steps 0 --phase4_steps 0 --phase5_steps 0)
+    EVAL_SET="${EVAL_SET:-wikitext}"   # WikiText 学習 → in-distribution は wikitext
+    ;;
+  3)
+    PHASE_STEP_ARGS=(--phase 3 --phase1_steps 0 --phase2_steps 0 --phase3_steps "$STEPS"
+                     --phase4_steps 0 --phase5_steps 0)
+    EVAL_SET="${EVAL_SET:-finance}"    # finance domain 学習 → 元発見と同じ finance 評価
+    ;;
+  *)
+    echo "[error] PHASE=$PHASE は未対応。1(WikiText)か 3(finance domain)を指定。" >&2
+    echo "        累積 step 設計と噛み合うのはこの2つ(他フェーズは別フェーズ分も込みで学習される)。" >&2
+    exit 1
+    ;;
+esac
 
-# finance_pretrain.py の step 予算は累積式(p_total = phase1+...+phaseN steps)。
-# このランナーは --phase1_steps だけを指定するため、短い単発ランがクリーンなのは
-# PHASE=1 のみ。PHASE>=2 だと意図しない長さ(直前フェーズ分も込み)で学習される。
-if [ "$PHASE" != "1" ]; then
-  echo "[error] このランナーは PHASE=1(WikiText 短期同一条件)専用です。" >&2
-  echo "        PHASE=$PHASE は finance_pretrain の累積 step 設計と噛み合いません。" >&2
-  echo "        finance 分布で再現したい場合は full curriculum を別途実行してください。" >&2
-  exit 1
-fi
+mkdir -p "$OUTDIR"
+echo "OUTDIR=$OUTDIR  STEPS=$STEPS  PHASE=$PHASE  EVAL_SET=$EVAL_SET  seq=$SEQ_LEN  batch=$BATCH  lr=$LR"
 
 run_one () {
   local attn="$1"
@@ -74,8 +89,7 @@ run_one () {
 
   # 2) 同一条件で学習(seed/データ/steps/seq/batch/lr/warmup を共有)
   "$PY" -u training/finance_pretrain.py \
-      --phase "$PHASE" \
-      --phase1_steps "$STEPS" \
+      "${PHASE_STEP_ARGS[@]}" \
       --base_ckpt "$base" \
       --ckpt_dir "$ckdir" \
       --seq_len "$SEQ_LEN" \
