@@ -41,6 +41,8 @@ Usage:
     python training/finance_pretrain.py --phase 1 --phase1_steps 100 --log_every 10
 """
 
+from __future__ import annotations  # アノテーション遅延評価(int | None 等を Py3.9 でも許可)
+
 import argparse
 import datetime
 import math
@@ -153,6 +155,12 @@ def _get_gpt2_tokenizer():
 # Dataset classes
 # ──────────────────────────────────────────────────────────────
 
+# データサンプリング(batch 順序)専用の seed。train() が args.seed で上書きする。
+# モデル構築が消費する torch global RNG とは分離した torch.Generator に使うことで、
+# 構造が違う MLA/GQA を別プロセスで学習しても batch 順序が一致する。
+_DATA_SAMPLE_SEED = 42
+
+
 class TextDataset:
     """
     Generic flat-token dataset built from a list of text rows.
@@ -168,10 +176,14 @@ class TextDataset:
         batch_size: int,
         device: torch.device,
         cache_path: Path,
+        sample_seed: int | None = None,
     ):
         self.seq_len = seq_len
         self.batch_size = batch_size
         self.device = device
+        # batch 順序用の専用 Generator(モデル RNG 消費と分離 → MLA/GQA で順序一致)
+        self._gen = torch.Generator()
+        self._gen.manual_seed(_DATA_SAMPLE_SEED if sample_seed is None else sample_seed)
 
         if cache_path.exists():
             print(f"  Loading cached tokens from {cache_path}")
@@ -204,7 +216,7 @@ class TextDataset:
                 f"Token count ({len(ids):,}) is too small for seq_len={self.seq_len}. "
                 "Check your cache or reduce --seq_len."
             )
-        starts = torch.randperm(n)[: len(self) * self.batch_size]
+        starts = torch.randperm(n, generator=self._gen)[: len(self) * self.batch_size]
         for i in range(0, len(starts) - self.batch_size + 1, self.batch_size):
             batch_starts = starts[i : i + self.batch_size]
             x = torch.stack([ids[s : s + self.seq_len] for s in batch_starts]).to(self.device)
@@ -309,10 +321,14 @@ class SFTDataset:
         batch_size: int,
         device: torch.device,
         cache_path: Path,
+        sample_seed: int | None = None,
     ):
         self.seq_len = seq_len
         self.batch_size = batch_size
         self.device = device
+        # batch 順序用の専用 Generator(モデル RNG 消費と分離 → MLA/GQA で順序一致)
+        self._gen = torch.Generator()
+        self._gen.manual_seed(_DATA_SAMPLE_SEED if sample_seed is None else sample_seed)
 
         if cache_path.exists():
             print(f"  Loading cached SFT tokens from {cache_path}")
@@ -343,7 +359,7 @@ class SFTDataset:
         n = len(self._ids) - self.seq_len - 1
         if n <= 0:
             raise ValueError(f"Token count ({len(self._ids):,}) too small for seq_len={self.seq_len}.")
-        starts = torch.randperm(n)[: len(self) * self.batch_size]
+        starts = torch.randperm(n, generator=self._gen)[: len(self) * self.batch_size]
         for i in range(0, len(starts) - self.batch_size + 1, self.batch_size):
             bs = starts[i : i + self.batch_size]
             x    = torch.stack([self._ids [s : s + self.seq_len    ] for s in bs]).to(self.device)
@@ -1047,13 +1063,17 @@ def run_phase(
 # ──────────────────────────────────────────────────────────────
 
 def train(args: argparse.Namespace) -> None:
-    # 学習全体の RNG seed を起動直後に固定。data sampling の torch.randperm は
-    # generator 未指定で global RNG に依存するため、これを固定しないと別プロセスで
-    # batch 順序がずれる(MLA/GQA 比較の公平性に効く)。loop_seed は loop sampling 専用で別物。
+    # 学習全体の RNG seed を起動直後に固定。
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
+    # batch 順序は専用 Generator(TextDataset/SFTDataset._gen)で決める。これをモデル構築の
+    # torch global RNG 消費から分離することが肝心: MLA/GQA は構造が違い RNG 消費量も違うため、
+    # global RNG 依存のままだと randperm の batch 順序が別プロセス間でずれる。
+    # データセットは _DATA_SAMPLE_SEED を読むので、ここで args.seed に揃える。
+    global _DATA_SAMPLE_SEED
+    _DATA_SAMPLE_SEED = args.seed
 
     device, amp_dtype = get_device_and_dtype(args.dtype)
 
