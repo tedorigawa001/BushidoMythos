@@ -1,8 +1,13 @@
 """
-BushidoMythos: kv_down 層 ターゲット QAT（量子化対応学習）— 実装版
+BushidoMythos: ターゲット QAT（量子化対応学習）— 実装版
 ================================================================
-目的: フル INT8 で finance PPL を大きく悪化させる単一層
-      recurrent.block.attn.kv_down を「INT8 量子化に強い重み」へ学習し直す。
+目的: フル INT8 で finance PPL を大きく悪化させる層を「INT8 量子化に強い重み」へ
+      学習し直す。既定は単一層 recurrent.block.attn.kv_down（劣化の 63% を占める犯人）。
+      --targets で任意の層集合（部分一致）に拡張可能（例: attn 全体 / routed_experts）。
+
+群別 ablation（phase5 / finance）の感度ランク（INT8 except G の回復幅）:
+      attn 70% > experts 27% > ffn_dense 20% > head 4% > router 1%
+      → 残り attn は安価だが小さく、床(+17%)の本体は experts/ffn_dense(FFN/MoE)。
 
 実測の裏付け（phase5_final.pt / finance / 30 chunks / n_loops=8）:
   full-INT8 +45.4%（README +46.6% を再現） / mixed-INT8(kv_down=fp32) +16.8%
@@ -61,9 +66,9 @@ def fake_quant_symmetric(w: torch.Tensor, qmax: int = 127) -> torch.Tensor:
     return w_q * scale
 
 
-class QATLinearKVDown(nn.Module):
+class QATLinearFakeQuant(nn.Module):
     """
-    kv_down(nn.Linear) を fake-quant でラップするドロップイン。
+    任意の nn.Linear を fake-quant でラップするドロップイン。
     weight だけ量子化（bias は fp32）。quant_strength で fp32↔量子化をブレンド。
     """
     def __init__(self, base_linear: nn.Linear):
@@ -80,83 +85,93 @@ class QATLinearKVDown(nn.Module):
         return F.linear(x, w, self.bias)
 
 
-def _get_kv_down_parent(model):
-    """kv_down を持つ親モジュールと属性名を返す（MLA のみ存在）。"""
-    parent = model.recurrent.block.attn
-    if not hasattr(parent, "kv_down"):
+def find_target_linears(model, patterns):
+    """
+    name に patterns（部分一致リスト）のいずれかを含む nn.Linear を列挙。
+    返り値: [(parent_module, attr_name, full_name), ...]
+    各 Linear はちょうど 1 つの親の子なので重複なし。
+    """
+    found = []
+    for mod_name, module in model.named_modules():
+        for attr, child in list(module.named_children()):
+            if isinstance(child, nn.Linear):
+                full = f"{mod_name}.{attr}" if mod_name else attr
+                if any(pat in full for pat in patterns):
+                    found.append((module, attr, full))
+    return found
+
+
+def swap_targets_to_qat(model, patterns):
+    """patterns に一致する Linear を QATLinearFakeQuant に差し替え、記録を返す。"""
+    targets = find_target_linears(model, patterns)
+    if not targets:
         raise RuntimeError(
-            "kv_down が見つかりません。MLA モデルのみ対象です "
-            "(GQA には kv_down がありません)。"
-        )
-    return parent, "kv_down"
+            f"対象 Linear が見つかりません: patterns={patterns}\n"
+            "層名を確認してください（例: recurrent.block.attn.kv_down / "
+            "recurrent.block.attn / routed_experts）。")
+    records = []  # (parent, attr, full_name, wrapper)
+    for parent, attr, full in targets:
+        wrap = QATLinearFakeQuant(getattr(parent, attr))
+        setattr(parent, attr, wrap)
+        records.append((parent, attr, full, wrap))
+    return records
 
 
-def swap_kv_down_to_qat(model):
-    """recurrent.block.attn.kv_down を QAT 版に差し替える。"""
-    parent, attr = _get_kv_down_parent(model)
-    target = getattr(parent, attr)
-    setattr(parent, attr, QATLinearKVDown(target))
-    return model
+def set_quant_strength(records, qs):
+    for _parent, _attr, _full, wrap in records:
+        wrap.quant_strength = qs
 
 
-def fold_qat_back_to_linear(model):
-    """
-    QATLinearKVDown を素の nn.Linear に畳み戻す。
-    学習済み(量子化に強い)fp32 weight/bias をそのまま持たせ、保存・評価で
-    標準の state_dict キーとして load_model から読めるようにする。
-    """
-    parent, attr = _get_kv_down_parent(model)
-    qat = getattr(parent, attr)
-    if not isinstance(qat, QATLinearKVDown):
-        return model  # 既に Linear
-    out_features, in_features = qat.weight.shape
-    lin = nn.Linear(in_features, out_features, bias=qat.bias is not None)
-    with torch.no_grad():
-        lin.weight.copy_(qat.weight)
-        if qat.bias is not None:
-            lin.bias.copy_(qat.bias)
-    setattr(parent, attr, lin)
-    return model
-
-
-def freeze_all_but_kv_down(model):
-    """
-    kv_down(weight/bias) 以外を凍結し、学習対象パラメータのリストを返す。
-    「kv_down だけ学習し直す」を保証し、モデル全体のドリフトを防ぐ。
-    """
-    parent, attr = _get_kv_down_parent(model)
-    kv = getattr(parent, attr)
-    trainable = list(kv.parameters())          # weight (, bias)
-    trainable_ids = {id(p) for p in trainable}
-    for p in trainable:
-        p.requires_grad = True
+def freeze_all_but_targets(model, records):
+    """対象 Linear(weight/bias) 以外を凍結し、学習対象パラメータのリストを返す。"""
+    trainable, ids = [], set()
+    for _parent, _attr, _full, wrap in records:
+        for p in wrap.parameters():
+            p.requires_grad = True
+            trainable.append(p)
+            ids.add(id(p))
     for p in model.parameters():
-        if id(p) not in trainable_ids:
+        if id(p) not in ids:
             p.requires_grad = False
     return trainable
 
 
-def qat_finetune_phase(model, dataloader, steps=500, n_loops=8, lr=2e-5,
+def fold_targets_back(records):
+    """
+    QATLinearFakeQuant を素の nn.Linear に畳み戻す。学習済み(量子化に強い)
+    fp32 weight/bias を持たせ、標準 state_dict キーで load_model から読めるように。
+    """
+    for parent, attr, _full, wrap in records:
+        out_features, in_features = wrap.weight.shape
+        lin = nn.Linear(in_features, out_features, bias=wrap.bias is not None)
+        with torch.no_grad():
+            lin.weight.copy_(wrap.weight)
+            if wrap.bias is not None:
+                lin.bias.copy_(wrap.bias)
+        setattr(parent, attr, lin)
+
+
+def qat_finetune_phase(model, dataloader, patterns, steps=500, n_loops=8, lr=2e-5,
                        log_every=50):
     """
-    kv_down ターゲット QAT 仕上げ。CE 損失のみ（loop-aware なし）。
+    ターゲット QAT 仕上げ。CE 損失のみ（loop-aware なし）。
     quant_strength を 0→1 へ線形に上げる（前半でフル量子化へ到達）。
-    kv_down(weight/bias) のみ学習し、他は凍結する。
+    patterns に一致する Linear(weight/bias) のみ学習し、他は凍結する。
 
     dataloader は (x, y) タプル（finance_pretrain の dataset と同じ向き）を yield。
     """
-    model = swap_kv_down_to_qat(model)
-    parent, attr = _get_kv_down_parent(model)
-    kv = getattr(parent, attr)
-
-    trainable = freeze_all_but_kv_down(model)
+    records = swap_targets_to_qat(model, patterns)
+    print(f"  QAT 対象 Linear ({len(records)}): "
+          + ", ".join(r[2] for r in records))
+    trainable = freeze_all_but_targets(model, records)
+    print(f"  学習対象パラメータ: {sum(p.numel() for p in trainable) / 1e6:.3f}M")
     opt = torch.optim.AdamW(trainable, lr=lr)
     model.train()
 
     for step, (x, y) in enumerate(dataloader):
         if step >= steps:
             break
-        kv.quant_strength = min(1.0, step / max(1.0, steps * 0.5))  # 前半でフル量子化へ
+        set_quant_strength(records, min(1.0, step / max(1.0, steps * 0.5)))
         logits = model(x, n_loops=n_loops)            # [B, T, V]
         B, T, V = logits.shape
         loss = F.cross_entropy(logits.reshape(B * T, V), y.reshape(B * T))
@@ -164,12 +179,12 @@ def qat_finetune_phase(model, dataloader, steps=500, n_loops=8, lr=2e-5,
         loss.backward()
         opt.step()
         if step % log_every == 0 or step == steps - 1:
-            print(f"  step {step:>4}/{steps}  qs={kv.quant_strength:.2f}  "
-                  f"loss={loss.item():.4f}")
+            qs = records[0][3].quant_strength
+            print(f"  step {step:>4}/{steps}  qs={qs:.2f}  loss={loss.item():.4f}")
 
-    kv.quant_strength = 1.0           # 最終的にフル INT8 前提
+    set_quant_strength(records, 1.0)  # 最終的にフル INT8 前提
     model.eval()
-    fold_qat_back_to_linear(model)    # 素の nn.Linear に畳み戻して保存可能に
+    fold_targets_back(records)        # 素の nn.Linear に畳み戻して保存可能に
     return model
 
 
@@ -197,6 +212,10 @@ def build_argparser():
     p = argparse.ArgumentParser(description="kv_down ターゲット QAT 仕上げ")
     p.add_argument("--base_ckpt", default="checkpoints/finance_a100_v2/phase5_final.pt",
                    help="QAT 前のベース（phase5_final.pt）")
+    p.add_argument("--targets", default="recurrent.block.attn.kv_down",
+                   help="QAT 対象の層名（部分一致・カンマ区切り）。既定は kv_down 単層。"
+                        "例: 'recurrent.block.attn'（recurrent 注意全体）/ "
+                        "'attn'（全 attention）/ 'routed_experts,ffn_dense'（FFN/MoE）")
     p.add_argument("--train_cache", default="finance_domain_mix_gpt2",
                    help="QAT 学習に使う finance キャッシュ名（.cache/<name>_<vocab>_v1.pt）。"
                         "Phase3 と同じ domain mix が既定。")
@@ -235,9 +254,10 @@ def main():
     loader = finance_token_loader(ids, args.seq_len, args.batch_size, device, seed=args.seed)
 
     # 3) QAT 仕上げ
-    print(f"QAT: kv_down ターゲット / steps={args.steps} n_loops={args.n_loops} "
+    patterns = [t.strip() for t in args.targets.split(",") if t.strip()]
+    print(f"QAT: targets={patterns} / steps={args.steps} n_loops={args.n_loops} "
           f"lr={args.lr} bs={args.batch_size} device={args.device}")
-    model = qat_finetune_phase(model, loader, steps=args.steps,
+    model = qat_finetune_phase(model, loader, patterns, steps=args.steps,
                                n_loops=args.n_loops, lr=args.lr)
 
     # 4) 保存（finance_pretrain 形式: cfg=dict + model_state）。
@@ -251,7 +271,7 @@ def main():
         "cfg": cfg_dict,
         "model_state": model.state_dict(),
         "step": raw.get("step", 0),
-        "tag": "kv_down_qat",
+        "tag": f"qat:{args.targets}",
     }, args.out)
     print(f"[saved] {args.out}")
     print("評価: eval_qat_compare.py に --qat_ckpt で渡すと条件D(full-INT8 QAT後)が出ます:")
