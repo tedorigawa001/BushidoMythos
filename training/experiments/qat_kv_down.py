@@ -152,19 +152,30 @@ def fold_targets_back(records):
 
 
 def qat_finetune_phase(model, dataloader, patterns, steps=500, n_loops=8, lr=2e-5,
-                       log_every=50):
+                       consistency_lambda=0.0, ref_model=None, log_every=50):
     """
-    ターゲット QAT 仕上げ。CE 損失のみ（loop-aware なし）。
-    quant_strength を 0→1 へ線形に上げる（前半でフル量子化へ到達）。
+    ターゲット QAT 仕上げ。quant_strength を 0→1 へ線形に上げる段階量子化。
     patterns に一致する Linear(weight/bias) のみ学習し、他は凍結する。
-
     dataloader は (x, y) タプル（finance_pretrain の dataset と同じ向き）を yield。
+
+    損失 = CE  +  consistency_lambda * KL( QAT出力 ‖ 凍結 base 出力 )
+      - consistency_lambda=0（既定）: CE のみ。kv_down / 軽い attention 拡張向け。
+      - consistency_lambda>0: 凍結 base(ref_model)のループ出力に QAT 出力を
+        近づけ、recurrent 内の多層(experts/ffn)を QAT してもループ不動点が
+        壊れないよう保護する（Exp B の破壊対策）。ref_model 必須。
     """
+    if consistency_lambda > 0 and ref_model is None:
+        raise ValueError("consistency_lambda>0 には ref_model（凍結 base）が必要です。")
     records = swap_targets_to_qat(model, patterns)
     print(f"  QAT 対象 Linear ({len(records)}): "
           + ", ".join(r[2] for r in records))
     trainable = freeze_all_but_targets(model, records)
     print(f"  学習対象パラメータ: {sum(p.numel() for p in trainable) / 1e6:.3f}M")
+    if consistency_lambda > 0:
+        print(f"  整合正則化: lambda={consistency_lambda}（凍結 base のループ出力へ KL）")
+        ref_model.eval()
+        for p in ref_model.parameters():
+            p.requires_grad = False
     opt = torch.optim.AdamW(trainable, lr=lr)
     model.train()
 
@@ -174,13 +185,27 @@ def qat_finetune_phase(model, dataloader, patterns, steps=500, n_loops=8, lr=2e-
         set_quant_strength(records, min(1.0, step / max(1.0, steps * 0.5)))
         logits = model(x, n_loops=n_loops)            # [B, T, V]
         B, T, V = logits.shape
-        loss = F.cross_entropy(logits.reshape(B * T, V), y.reshape(B * T))
+        ce = F.cross_entropy(logits.reshape(B * T, V), y.reshape(B * T))
+        if consistency_lambda > 0:
+            with torch.no_grad():
+                ref_logits = ref_model(x, n_loops=n_loops)   # 凍結 base のループ出力
+            # KL( ref ‖ qat ): base の分布を teacher として QAT 出力を保持
+            kl = F.kl_div(
+                F.log_softmax(logits.reshape(B * T, V), dim=-1),
+                F.softmax(ref_logits.reshape(B * T, V), dim=-1),
+                reduction="batchmean",
+            )
+            loss = ce + consistency_lambda * kl
+        else:
+            kl = None
+            loss = ce
         opt.zero_grad()
         loss.backward()
         opt.step()
         if step % log_every == 0 or step == steps - 1:
             qs = records[0][3].quant_strength
-            print(f"  step {step:>4}/{steps}  qs={qs:.2f}  loss={loss.item():.4f}")
+            extra = f"  kl={kl.item():.4f}" if kl is not None else ""
+            print(f"  step {step:>4}/{steps}  qs={qs:.2f}  ce={ce.item():.4f}{extra}")
 
     set_quant_strength(records, 1.0)  # 最終的にフル INT8 前提
     model.eval()
@@ -223,6 +248,10 @@ def build_argparser():
     p.add_argument("--steps", type=int, default=500, help="QAT ステップ数（仕上げなので短め）")
     p.add_argument("--n_loops", type=int, default=8, help="学習時の recurrent ループ数")
     p.add_argument("--lr", type=float, default=2e-5)
+    p.add_argument("--consistency_lambda", type=float, default=0.0,
+                   help="凍結 base のループ出力への KL 整合の重み（既定 0=無効）。"
+                        "experts/ffn など recurrent 多層を QAT する際、ループ不動点を"
+                        "壊さないため >0（例 0.5〜2.0）にする。低 lr(5e-6)と併用推奨。")
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--seq_len", type=int, default=1024)
     p.add_argument("--seed", type=int, default=42)
@@ -256,9 +285,16 @@ def main():
     # 3) QAT 仕上げ
     patterns = [t.strip() for t in args.targets.split(",") if t.strip()]
     print(f"QAT: targets={patterns} / steps={args.steps} n_loops={args.n_loops} "
-          f"lr={args.lr} bs={args.batch_size} device={args.device}")
+          f"lr={args.lr} bs={args.batch_size} consistency_lambda={args.consistency_lambda} "
+          f"device={args.device}")
+    # consistency_lambda>0 のときだけ凍結 base(参照)を別途ロード（メモリ2倍）
+    ref_model = None
+    if args.consistency_lambda > 0:
+        ref_model, _ = load_model(args.base_ckpt, device)
     model = qat_finetune_phase(model, loader, patterns, steps=args.steps,
-                               n_loops=args.n_loops, lr=args.lr)
+                               n_loops=args.n_loops, lr=args.lr,
+                               consistency_lambda=args.consistency_lambda,
+                               ref_model=ref_model)
 
     # 4) 保存（finance_pretrain 形式: cfg=dict + model_state）。
     #    cfg dict は元 ckpt から取り出して流用（QAT で cfg は不変）。
