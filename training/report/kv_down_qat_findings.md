@@ -125,3 +125,93 @@ python3 training/experiments/eval_qat_compare.py \
   --base_ckpt checkpoints/finance_a100_v2/phase5_qat.pt \
   --eval_set finance --n_loops 1,2,4,8 --eval_max_chunks 30 --device cpu
 ```
+
+---
+
+# 第2段: 他層への拡張と第2ボトルネック
+
+kv_down を直した後の残存量子化劣化(QAT モデル基準で約 +16〜17%)を下げるべく、QAT を
+他層へ拡張した。結論を先に: **第2ボトルネックも「1層集中」型(shared_experts)** であり、
+**整合正則化で recurrent 多層 QAT の破壊を防げる**。ただし床の低下は逓減する。
+
+## 群別感度 ablation（次の犯人を特定）
+
+`exp_quantize_ablation.py`（phase5 / finance）で `INT8 except G`（G だけ fp32 温存）の
+回復幅を測り、量子化に弱い群をランク付けした:
+
+| group | 回復幅 | 全劣化に占める |
+|---|---|---|
+| attn | 大 | **70%**（うち kv_down 63%）|
+| experts (MoE) | 中 | 27% |
+| ffn_dense | 中 | 20% |
+| head | 小 | 4% |
+| router | 小 | 1% |
+
+さらに experts を射影タイプ別へ細分化（INT8 except subgroup, 12 chunks, INT8 all=100.43）:
+
+| keep fp32 する subgroup | 回復幅 | 解釈 |
+|---|---|---|
+| **shared_experts（3層）** | **8.67** | MoE 劣化の大半が 3 層に集中 |
+| ffn_dense（prelude/coda 6層）| 6.38 | 非ループの dense FFN |
+| experts.down（28層）| 1.03 | ほぼ無害 |
+| experts.gate（28層）| 0.77 | ほぼ無害 |
+| experts.up（28層）| −0.05 | 無害 |
+
+→ **routed experts 84層（53M）は INT8 に頑健**。第2ボトルネックは **shared_experts（3層）+
+ffn_dense（6層）= 計9層・約8M** に集中。kv_down と同じ「サイズ≠感度・1層集中」構図。
+
+## 実験と結果（full-INT8 vs 各モデル自身の fp32, n_loops=8）
+
+| 実験 | QAT 対象 | lr / 正則化 | fp32 が depth で | full-INT8 | 判定 |
+|---|---|---|---|---|---|
+| base | なし | — | 改善（51.5→43.5）| +45.4% | — |
+| kv_down | kv_down 1層 | 2e-5 / なし | 改善 | +17.2% | 成功 |
+| Exp A | recurrent.block.attn 6層 | 2e-5 / なし | 改善（45.9→30.0）| +16.4% | 健全 |
+| Exp B | attn+experts+ffn ~84層/60M | 2e-5 / なし | **悪化（59.9→77.4）** | — | **破壊** |
+| Exp C | attn+shared_experts+pre/coda ffn 15層/9M | 1e-5 / **λ=1.0** | 改善（42.1→30.9）| **+13.5%** | 健全 |
+
+- **Exp B（wide, 正則化なし）は破壊**: fp32 が depth で悪化＝ループ不動点の崩壊。
+  量子化に頑健な 53M の routed experts まで lr=2e-5 で学習したため。
+- **Exp C（ターゲット9層 + 整合正則化 λ=1.0）は健全**: 同じ recurrent 多層（shared_experts
+  含む）を触っても、凍結 base のループ出力への KL 整合でループが保持された。床も
+  +16.4% → +13.5% へ低下（量子化ギャップ 4.92 → 4.15 PPL）。
+- すべての QAT モデルで **full-INT8 ≦ mixed-INT8(kv_down=fp32)**: kv_down は量子化
+  ネイティブになり、fp32 に戻す方がむしろ悪い。
+
+## 交絡（fp32 改善）の検証 — overfit ではない
+
+Exp A の fp32 PPL は finance で 43.5→30.0 と大きく改善したが、**held-out の WikiText でも
+~370→258.79 と同程度に改善**。finance 固有の overfit ではなく汎化（`finance_domain_mix` に
+一般テキストも含まれ、追加学習が attention を全般的に改善したと解釈）。量子化頑健性の
+結論（full ≦ mixed）はこの交絡とは独立。
+
+## 第2段の結論
+
+1. **第2ボトルネックも 1 層集中**（shared_experts 3層）。routed experts 84層は量子化頑健で、
+   QAT 対象にすべきでない（触ると壊れるだけ＝Exp B）。
+2. **整合正則化（--consistency_lambda）が recurrent 多層 QAT の破壊を防ぐ**。Exp B（破壊）
+   → Exp C（健全）の差はこの一点。
+3. **床の低下は逓減**: +45.4%(base) → +17.2%(kv_down) → +16.4%(attn) → +13.5%(9層)。
+   残る +13.5% は頑健・拡散した層（routed experts ~0% / head 4% / router 1%）由来で、
+   これらの QAT は head 38.6M・routed 53M と高コスト低リターン。**+13.5% を実用上の床**とする。
+
+### 再現コマンド（第2段）
+
+```bash
+# 群別 ablation（次の犯人の特定）
+python3 training/exp_quantize_ablation.py \
+  --ckpt checkpoints/finance_a100_v2/phase5_final.pt --eval_max_chunks 15
+
+# Exp C: 第2ボトルネックも含めた 15 層ターゲット QAT（整合正則化つき）
+python3 training/experiments/qat_kv_down.py \
+  --base_ckpt checkpoints/finance_a100_v2/phase5_final.pt \
+  --targets recurrent.block.attn,shared_experts,prelude.0.ffn,coda.0.ffn \
+  --consistency_lambda 1.0 --lr 1e-5 \
+  --steps 1500 --n_loops 8 --batch_size 4 --seq_len 1024 --device cuda \
+  --out checkpoints/finance_a100_v2/phase5_qat_floor.pt
+
+# 破壊チェック（fp32 が depth で改善するか）+ 量子化劣化
+python3 training/experiments/eval_qat_compare.py \
+  --base_ckpt checkpoints/finance_a100_v2/phase5_qat_floor.pt \
+  --eval_set finance --n_loops 1,2,4,8 --eval_max_chunks 30 --device cpu
+```
