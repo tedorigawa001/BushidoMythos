@@ -215,3 +215,43 @@ python3 training/eval_qat_compare.py \
   --base_ckpt checkpoints/finance_a100_v2/phase5_qat_floor.pt \
   --eval_set finance --n_loops 1,2,4,8 --eval_max_chunks 30 --device cpu
 ```
+
+---
+
+# 配布物: フル INT8 QAT モデル
+
+QAT の成果を deployable な INT8 アーティファクトとして固める。**kv_down を fp32 に残す
+mixed-INT8 回避策が不要**になり、全 Linear を INT8 にしたままデプロイできる。
+
+- **正本（fp32 QAT）**: `checkpoints/finance_a100_v2/phase5_qat_floor.pt`（Exp C, 15層 QAT）
+- **配布物（full-INT8）**: `checkpoints/finance_a100_v2/phase5_qat_int8.pt`
+  - 全 115 Linear を INT8 dynamic 量子化。**254 MB**（fp32 376MB から約 32% 減）。
+  - roundtrip 検証: 保存→再ロードの forward 最大差 **0.00e+00**（完全一致）。
+  - finance 量子化劣化: **+11.7%**(15 chunks) / +13.5%(30 chunks, Exp C control) vs QAT-fp32。
+
+## 生成・ロード（既存 make_mixed_int8.py を流用、新コード不要）
+
+```bash
+# フル INT8 化（--keep_fp32 "" で fp32 維持層なし）+ roundtrip 検証
+python3 training/make_mixed_int8.py \
+  --ckpt checkpoints/finance_a100_v2/phase5_qat_floor.pt \
+  --out  checkpoints/finance_a100_v2/phase5_qat_int8.pt \
+  --keep_fp32 "" --verify
+
+# 推論（CPU; 量子化 dtype は pickle 必須 = 自作の信頼できる ckpt のみ trusted/allow_unsafe）
+python3 chat.py --mixed_int8 --allow_unsafe_checkpoint \
+  --ckpt checkpoints/finance_a100_v2/phase5_qat_int8.pt
+# プログラムからは: load_mixed_int8(path, device, trusted=True) -> (qmodel, cfg)
+```
+
+## 配布・検証メモ（正式アーティファクトの前提）
+
+- **配布経路**: `checkpoints/` は gitignore。254MB バイナリは git に入れず、Drive/HF/Release
+  経由で配布する（git には本レシピと検証結果のみ記録）。本リポジトリの `checkpoints/` は
+  Drive 同期フォルダのため、生成物は Colab 側へ自動同期される。
+- **CPU 専用**: INT8 dynamic は CPU のみ。GPU は対象外（GPTQ/AWQ はこの RDT/MoE 非対応）。
+- **モデル素性**: これは finance 特化 phase5 を QAT 仕上げした**別モデル**（fp32 も
+  43.5→30.9 に変化、WikiText でも改善＝汎化）。「phase5 を量子化しただけ」ではない点に注意。
+- **評価範囲**: finance(financial_news)/ WikiText の partial-eval(≤30 chunks)・1 モデル。
+  `financial_news`(eval) と `finance_domain_mix`(QAT 学習) は分布が重なりうる。本番採用前に
+  実デプロイ分布での追加評価を推奨。
