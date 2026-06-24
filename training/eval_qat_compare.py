@@ -32,9 +32,9 @@ import os
 import sys
 import copy
 
-# このファイルは training/experiments/ にあるため、`training.*` / `bushido_mythos.*` を
-# どこから実行しても import できるよう、リポジトリルート（2階層上）を sys.path に追加する。
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# このファイルは training/ にあるため、`training.*` / `bushido_mythos.*` を
+# どこから実行しても import できるよう、リポジトリルート（1階層上）を sys.path に追加する。
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
@@ -260,7 +260,7 @@ def build_argparser():
                         "ACT 早期停止するため 8 超は 8 と同値（クランプ）。意味のある範囲 1〜8 を推奨")
     p.add_argument("--seq_len", type=int, default=1024)
     p.add_argument("--eval_set", choices=["finance", "wikitext"], default="finance",
-                   help="評価分布。finance=cache（元発見 +46.6% と同条件）/ "
+                   help="評価分布。finance=cache（元発見 +46.6%% と同条件）/ "
                         "wikitext=一般言語（DL）。既定 finance")
     p.add_argument("--finance_eval", default="financial_news_gpt2",
                    help="finance 評価キャッシュ名（.cache/<name>_<vocab>_v1.pt）")

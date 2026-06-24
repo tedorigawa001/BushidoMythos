@@ -28,7 +28,7 @@ BushidoMythos: ターゲット QAT（量子化対応学習）— 実装版
        quantize_dynamic を当てて +16.8% にどこまで迫るかを判定できる。
 
 実行:
-  python3 training/experiments/qat_kv_down.py \
+  python3 training/qat_kv_down.py \
     --base_ckpt checkpoints/finance_a100_v2/phase5_final.pt \
     --train_cache finance_domain_mix_gpt2 \
     --steps 500 --n_loops 8 --out checkpoints/finance_a100_v2/phase5_qat.pt
@@ -38,8 +38,8 @@ import argparse
 import os
 import sys
 
-# training/experiments/ から training.* / bushido_mythos.* を import 可能にする。
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# training/ から training.* / bushido_mythos.* を import 可能にする。
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
@@ -311,7 +311,7 @@ def main():
     }, args.out)
     print(f"[saved] {args.out}")
     print("評価: eval_qat_compare.py に --qat_ckpt で渡すと条件D(full-INT8 QAT後)が出ます:")
-    print(f"  python3 training/experiments/eval_qat_compare.py \\\n"
+    print(f"  python3 training/eval_qat_compare.py \\\n"
           f"    --base_ckpt {args.base_ckpt} --qat_ckpt {args.out} \\\n"
           f"    --eval_set finance --n_loops 1,2,4,8 --eval_max_chunks 30")
 

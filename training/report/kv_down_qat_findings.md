@@ -22,14 +22,14 @@ BushidoMythos(MLA)の単一層 `recurrent.block.attn.kv_down` を狙った
   `eval_max_chunks=30`、`n_loops ∈ {1,2,4,8}`、INT8 dynamic(CPU 専用)
 - **量子化**: `torch.quantization.quantize_dynamic({nn.Linear}, qint8)`
   (per-tensor 対称・zero_point=0・scale=max|w|/127)
-- **QAT**: `training/experiments/qat_kv_down.py`
+- **QAT**: `training/qat_kv_down.py`
   - 対象: `kv_down`(weight/bias)のみ学習、他層は凍結
   - Fake-Quant: 評価器と同一(per-tensor 対称・scale=max|w|/127・STE)
   - quant_strength を 0→1 へ段階的に上げる(前半でフル量子化へ)
   - 損失: CE のみ(後述のとおり「ループ増幅」が観測されないため loop-aware 項は不採用)
   - ハイパラ: steps=1000, n_loops=8, batch_size=4, seq_len=1024, lr=2e-5,
     train=`finance_domain_mix_gpt2`
-- **比較ツール**: `training/experiments/eval_qat_compare.py`(4 条件を同一プロトコルで PPL 比較)
+- **比較ツール**: `training/eval_qat_compare.py`(4 条件を同一プロトコルで PPL 比較)
 
 ---
 
@@ -108,20 +108,20 @@ kv_down を INT8 にしても劣化しない重みを獲得した。フル INT8 
 
 ```bash
 # QAT 仕上げ(GPU 推奨)
-python3 training/experiments/qat_kv_down.py \
+python3 training/qat_kv_down.py \
   --base_ckpt checkpoints/finance_a100_v2/phase5_final.pt \
   --train_cache finance_domain_mix_gpt2 \
   --steps 1000 --n_loops 8 --batch_size 4 --seq_len 1024 \
   --device cuda --out checkpoints/finance_a100_v2/phase5_qat.pt
 
 # 4 条件比較(CPU — INT8 dynamic は CPU 専用)
-python3 training/experiments/eval_qat_compare.py \
+python3 training/eval_qat_compare.py \
   --base_ckpt checkpoints/finance_a100_v2/phase5_final.pt \
   --qat_ckpt  checkpoints/finance_a100_v2/phase5_qat.pt \
   --eval_set finance --n_loops 1,2,4,8 --eval_max_chunks 30 --device cpu
 
 # 交絡確認: QAT モデル自身の fp32 を基準にした量子化劣化
-python3 training/experiments/eval_qat_compare.py \
+python3 training/eval_qat_compare.py \
   --base_ckpt checkpoints/finance_a100_v2/phase5_qat.pt \
   --eval_set finance --n_loops 1,2,4,8 --eval_max_chunks 30 --device cpu
 ```
@@ -203,7 +203,7 @@ python3 training/exp_quantize_ablation.py \
   --ckpt checkpoints/finance_a100_v2/phase5_final.pt --eval_max_chunks 15
 
 # Exp C: 第2ボトルネックも含めた 15 層ターゲット QAT（整合正則化つき）
-python3 training/experiments/qat_kv_down.py \
+python3 training/qat_kv_down.py \
   --base_ckpt checkpoints/finance_a100_v2/phase5_final.pt \
   --targets recurrent.block.attn,shared_experts,prelude.0.ffn,coda.0.ffn \
   --consistency_lambda 1.0 --lr 1e-5 \
@@ -211,7 +211,7 @@ python3 training/experiments/qat_kv_down.py \
   --out checkpoints/finance_a100_v2/phase5_qat_floor.pt
 
 # 破壊チェック（fp32 が depth で改善するか）+ 量子化劣化
-python3 training/experiments/eval_qat_compare.py \
+python3 training/eval_qat_compare.py \
   --base_ckpt checkpoints/finance_a100_v2/phase5_qat_floor.pt \
   --eval_set finance --n_loops 1,2,4,8 --eval_max_chunks 30 --device cpu
 ```
