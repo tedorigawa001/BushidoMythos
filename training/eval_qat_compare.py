@@ -136,39 +136,33 @@ def load_qat_full_int8(qat_ckpt_path):
 # ==================================================================
 # PPL 計測（eval_perplexity.py のロジックに合わせた骨格）
 # ==================================================================
-def compute_ppl(model, token_ids, seq_len, n_loops, vocab_size, device="cpu"):
+def compute_ppl(model, cfg, token_ids, seq_len, n_loops, device="cpu",
+                stride=None, max_chunks=None):
     """
-    非重複チャンクで負の対数尤度を平均し exp する素朴な PPL。
-    eval_perplexity.py 同様、token を [0, vocab_size-1] に clamp。
+    canonical な eval_perplexity.compute_perplexity に委譲して PPL を測る。
+    全 eval 経路を同一ロジックに統一するための薄いラッパ。
+      - stride=None      : 非重複チャンク（旧 naive 版と同等・高速）
+      - stride<seq_len   : 標準 sliding-window（重複はコンテキスト扱いで二重カウント回避）
+    token の vocab clamp / max_chunks 打ち切りも compute_perplexity 側で処理される。
     """
     import torch
-    model.eval().to(device)
-    nlls, count = [], 0
-    ids = token_ids.clamp(0, vocab_size - 1)
-    n_chunks = ids.size(0) // seq_len
-    with torch.no_grad():
-        for i in range(n_chunks):
-            chunk = ids[i * seq_len:(i + 1) * seq_len].unsqueeze(0).to(device)
-            inp, tgt = chunk[:, :-1], chunk[:, 1:]
-            logits = model(inp, n_loops=n_loops)
-            loss = torch.nn.functional.cross_entropy(
-                logits.reshape(-1, logits.size(-1)), tgt.reshape(-1)
-            )
-            nlls.append(loss.item()); count += 1
-    mean_nll = sum(nlls) / max(count, 1)
-    return math.exp(mean_nll) if count else float("nan")
-
-
-import math  # compute_ppl が使う
+    from training.eval_perplexity import compute_perplexity
+    ppl, _ = compute_perplexity(
+        model, cfg, token_ids, torch.device(device),
+        seq_len=seq_len, stride=stride, n_loops=n_loops, max_chunks=max_chunks,
+    )
+    return ppl
 
 
 # ==================================================================
 # 評価ドライバ
 # ==================================================================
-def evaluate_all(base_ckpt, qat_ckpt, datasets, n_loops_list, seq_len, device):
+def evaluate_all(base_ckpt, qat_ckpt, datasets, n_loops_list, seq_len, device,
+                 stride=None, eval_max_chunks=None):
     """
     4 条件 × データセット × n_loops を回し、結果 dict を返す。
     datasets: {"wikitext": tensor_ids, "finance": tensor_ids}
+    stride: None=非重複 / int=標準 sliding-window。eval_max_chunks: 評価 window 数の上限。
     """
     import torch
     from training.eval_perplexity import load_model
@@ -201,7 +195,8 @@ def evaluate_all(base_ckpt, qat_ckpt, datasets, n_loops_list, seq_len, device):
         for dname, ids in datasets.items():
             results[cond][dname] = {}
             for nl in n_loops_list:
-                ppl = compute_ppl(model, ids, seq_len, nl, vocab, device)
+                ppl = compute_ppl(model, cfg, ids, seq_len, nl, device,
+                                  stride=stride, max_chunks=eval_max_chunks)
                 results[cond][dname][nl] = ppl
     return results
 
@@ -259,6 +254,9 @@ def build_argparser():
                    help="評価する recurrent ループ数（カンマ区切り）。phase5 は max_loop_iters=8 で "
                         "ACT 早期停止するため 8 超は 8 と同値（クランプ）。意味のある範囲 1〜8 を推奨")
     p.add_argument("--seq_len", type=int, default=1024)
+    p.add_argument("--stride", type=int, default=None,
+                   help="PPL の sliding-window stride。None=非重複(旧既定・高速)。"
+                        "標準ベンチに合わせるなら 512 等(seq_len の半分目安)。")
     p.add_argument("--eval_set", choices=["finance", "wikitext"], default="finance",
                    help="評価分布。finance=cache（元発見 +46.6%% と同条件）/ "
                         "wikitext=一般言語（DL）。既定 finance")
@@ -341,7 +339,8 @@ def main():
         }
 
     results = evaluate_all(args.base_ckpt, args.qat_ckpt, datasets,
-                           n_loops_list, args.seq_len, args.device)
+                           n_loops_list, args.seq_len, args.device,
+                           stride=args.stride, eval_max_chunks=args.eval_max_chunks)
     report = render_report(results, n_loops_list, args.out)
     print("\n" + report)
     print(f"\n[saved] {args.out}")

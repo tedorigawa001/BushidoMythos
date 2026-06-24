@@ -58,10 +58,10 @@ def _quantize_names(model, names):
     return quantize_dynamic(model, set(names), dtype=torch.qint8)
 
 
-def _eval_ppl(model, cfg, ids, device, max_chunks):
+def _eval_ppl(model, cfg, ids, device, max_chunks, stride=None):
     model.eval()
     ppl, _ = compute_perplexity(model, cfg, ids, device, seq_len=1024,
-                                n_loops=8, max_chunks=max_chunks)
+                                n_loops=8, max_chunks=max_chunks, stride=stride)
     return ppl
 
 
