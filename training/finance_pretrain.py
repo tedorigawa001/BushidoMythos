@@ -698,6 +698,42 @@ def _phase_idx_from_name(phase_name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _curriculum_ramp(progress: float, start: float, end: float,
+                     warmup_frac: float) -> float:
+    """全学習進捗 progress∈[0,1] に対し start→end を線形ランプし、以降 end で保持。
+
+    warmup_frac は「全学習のうち何割でランプを完了するか」(0<frac≤1)。
+    例: start=0.5, end=0.99, warmup_frac=0.5 なら前半50%で 0.5→0.99 に上げ、後半は 0.99 固定。
+    warmup_frac<=0 のときは常に end を返す(ランプ無し=即 end)。
+    """
+    if warmup_frac <= 0.0:
+        return end
+    frac = min(max(progress, 0.0) / warmup_frac, 1.0)
+    return start + (end - start) * frac
+
+
+def apply_act_curriculum(model, args: argparse.Namespace,
+                         step: int, grand_total: int) -> tuple[float, float]:
+    """ACT カリキュラム: グローバル進捗に応じて act_threshold / ponder weight を更新。
+
+    モデルは forward 時に毎回 cfg を読むため、共有 cfg オブジェクトを書き換えるだけで
+    次の forward から反映される(モデルコード非改変)。返り値は現在値(ログ用)。
+
+    - act_threshold: start→end へ線形に「上げる」と、初期は浅いループで早期停止し、
+      後半ほど深い推論を解禁する(浅→深カリキュラム)。
+    - act_aux_loss_weight(ponder cost): start→end へ「下げる」と、初期は余分なループに
+      強くペナルティを掛け、後半で緩める。閾値ランプと同方向(浅→深)に効く補助レバー。
+    """
+    progress = step / max(grand_total - 1, 1)
+    thr = _curriculum_ramp(progress, args.act_threshold_start,
+                           args.act_threshold_end, args.act_warmup_frac)
+    pon = _curriculum_ramp(progress, args.ponder_weight_start,
+                           args.ponder_weight_end, args.act_warmup_frac)
+    model.cfg.act_threshold = thr
+    model.cfg.act_aux_loss_weight = pon
+    return thr, pon
+
+
 # ──────────────────────────────────────────────────────────────
 # Checkpoint helpers
 # ──────────────────────────────────────────────────────────────
@@ -877,6 +913,11 @@ def run_phase(
     phase_idx = _phase_idx_from_name(phase_name)
     loop_mode = getattr(args, "loop_schedule", "off")
 
+    # ACT カリキュラム: 全フェーズ合計ステップを「学習全体」としてグローバル進捗を測る
+    act_curriculum = getattr(args, "act_curriculum", False)
+    act_grand_total = max(
+        phase1_steps + phase2_steps + phase3_steps + phase4_steps + phase5_steps, 1)
+
     # 記憶リプレイ（rehearsal）: replay_dataset があれば無限巡回イテレータを用意
     replay_ratio = getattr(args, "replay_ratio", 0.0)
     replay_iter = (_cycle_batches(replay_dataset)
@@ -916,6 +957,10 @@ def run_phase(
         print(f"  loop schedule: FIXED n_loops={cfg.max_loop_iters}")
     if replay_iter is not None:
         print(f"  memory replay: {replay_ratio*100:.0f}% of batches drawn from general-language anchor (anti-forgetting)")
+    if act_curriculum:
+        print(f"  ACT curriculum: act_threshold {args.act_threshold_start}→{args.act_threshold_end}"
+              f"  ponder {args.ponder_weight_start}→{args.ponder_weight_end}"
+              f"  (ramp over first {args.act_warmup_frac*100:.0f}% of {act_grand_total} steps)")
     print(f"{'='*60}\n")
 
     # Reset peak memory stats at phase start so the first [VRAM] log reflects
@@ -965,6 +1010,11 @@ def run_phase(
             if n_loops is not None:
                 total_loops += n_loops
                 n_loops_micros += 1
+
+            # ACT カリキュラム: グローバル進捗に応じて act_threshold / ponder を更新
+            # (forward は毎回 cfg を読むので、ここでの書き換えが次の forward に効く)
+            if act_curriculum:
+                apply_act_curriculum(model, args, step, act_grand_total)
 
             with torch.autocast(autocast_device, dtype=amp_dtype, enabled=use_amp):
                 logits = model(x, n_loops=n_loops)
@@ -1020,10 +1070,15 @@ def run_phase(
                 replay_str = ""
                 if replay_iter is not None and log_micros > 0:
                     replay_str = f"  replay={total_replay / max(log_micros,1)*100:.0f}%"
+                act_str = ""
+                if act_curriculum:
+                    act_str = f"  act_thr={model.cfg.act_threshold:.3f}"
+                    if model.cfg.act_aux_loss_weight:
+                        act_str += f"  ponder={model.cfg.act_aux_loss_weight:.3f}"
                 print(
                     f"[{phase_name}] step {step:6d}/{total_steps}"
                     f"  loss={avg_loss:.4f}  ce={avg_ce:.4f}  aux={avg_aux:.4f}"
-                    f"  ppl={ppl:.1f}  lr={lr_now:.2e}{loops_str}{replay_str}  elapsed={elapsed:.0f}s"
+                    f"  ppl={ppl:.1f}  lr={lr_now:.2e}{loops_str}{replay_str}{act_str}  elapsed={elapsed:.0f}s"
                 )
                 total_loss = total_ce = total_aux = 0.0
                 total_loops = 0
@@ -1146,6 +1201,10 @@ def train(args: argparse.Namespace) -> None:
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_params:,}  ({n_params/1e6:.1f}M)  vocab={cfg.vocab_size:,}")
+
+    # ── ACT curriculum: 終了閾値の既定(-1)は cfg.act_threshold を採用 ──
+    if args.act_curriculum and args.act_threshold_end < 0:
+        args.act_threshold_end = cfg.act_threshold
 
     # ── Phase step totals ─────────────────────────────────────
     p1_total = args.phase1_steps
@@ -1397,6 +1456,22 @@ def parse_args() -> argparse.Namespace:
                         "loop sampling 用の --loop_seed とは別物。")
     p.add_argument("--loop_seed", type=int, default=0,
                    help="loop サンプラのシード (default: 0)。step+seed で決定的・resume 安全")
+
+    # ACT curriculum (動的 act_threshold / ponder cost)
+    p.add_argument("--act_curriculum", action="store_true",
+                   help="ACT カリキュラムを有効化。グローバル進捗に応じて act_threshold を上げ"
+                        "(浅→深)、必要なら ponder cost を下げる。既定オフ=cfg 固定値のまま。")
+    p.add_argument("--act_threshold_start", type=float, default=0.5,
+                   help="act_curriculum 時の開始 act_threshold (default: 0.5=浅いループで早期停止)")
+    p.add_argument("--act_threshold_end", type=float, default=-1.0,
+                   help="act_curriculum 時の終了 act_threshold (default: -1=cfg.act_threshold を採用)")
+    p.add_argument("--act_warmup_frac", type=float, default=0.5,
+                   help="全学習のうち閾値/ponder を start→end へランプし切る割合 (default: 0.5=前半で完了)")
+    p.add_argument("--ponder_weight_start", type=float, default=0.0,
+                   help="act_curriculum 時の開始 ponder cost (act_aux_loss_weight)。"
+                        "初期に余分なループを抑えたいとき >0 に。既定 0=無効")
+    p.add_argument("--ponder_weight_end", type=float, default=0.0,
+                   help="act_curriculum 時の終了 ponder cost (default: 0)。start>end で後半ほど緩める")
 
     # Memory replay (anti-forgetting)
     p.add_argument("--replay_ratio", type=float, default=0.0,

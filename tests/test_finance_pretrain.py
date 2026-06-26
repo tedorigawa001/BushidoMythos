@@ -9,6 +9,7 @@ Covers:
   - Cache key versioning
 """
 
+import argparse
 import math
 import sys
 import tempfile
@@ -35,6 +36,8 @@ from training.finance_pretrain import (
     run_phase,
     _cycle_batches,
     make_optimizer,
+    _curriculum_ramp,
+    apply_act_curriculum,
 )
 from chat import find_latest_ckpt
 from bushido_mythos import MythosConfig, BushidoMythos
@@ -689,6 +692,125 @@ class TestMakeOptimizer:
         opt = make_optimizer(params, lr=1e-3, optim8bit=True)
         params[0].sum().backward()
         opt.step()  # 例外が出ないこと
+
+
+class _FakeCfg:
+    """apply_act_curriculum が書き換える最小 cfg(モデルが forward で読む属性のみ)。"""
+    def __init__(self, act_threshold=0.99, act_aux_loss_weight=0.0):
+        self.act_threshold = act_threshold
+        self.act_aux_loss_weight = act_aux_loss_weight
+
+
+class _FakeModel:
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+
+def _curriculum_args(**over):
+    base = dict(
+        act_threshold_start=0.5,
+        act_threshold_end=0.99,
+        act_warmup_frac=0.5,
+        ponder_weight_start=0.02,
+        ponder_weight_end=0.0,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+class TestCurriculumRamp:
+    """_curriculum_ramp: 線形ランプ→hold の数値挙動。"""
+
+    def test_returns_start_at_progress_zero(self):
+        assert _curriculum_ramp(0.0, 0.5, 0.99, 0.5) == pytest.approx(0.5)
+
+    def test_linear_midpoint_within_warmup(self):
+        # progress=0.25, warmup_frac=0.5 → ランプ進捗 0.5 → 中点
+        mid = 0.5 + (0.99 - 0.5) * 0.5
+        assert _curriculum_ramp(0.25, 0.5, 0.99, 0.5) == pytest.approx(mid)
+
+    def test_reaches_end_at_warmup_boundary(self):
+        assert _curriculum_ramp(0.5, 0.5, 0.99, 0.5) == pytest.approx(0.99)
+
+    def test_holds_end_after_warmup(self):
+        assert _curriculum_ramp(0.9, 0.5, 0.99, 0.5) == pytest.approx(0.99)
+        assert _curriculum_ramp(1.0, 0.5, 0.99, 0.5) == pytest.approx(0.99)
+
+    def test_zero_warmup_returns_end_immediately(self):
+        # frac<=0 はランプ無し=常に end(スケジュール無効と同義)
+        assert _curriculum_ramp(0.0, 0.5, 0.99, 0.0) == pytest.approx(0.99)
+        assert _curriculum_ramp(0.3, 0.5, 0.99, 0.0) == pytest.approx(0.99)
+
+    def test_negative_progress_clamped_to_start(self):
+        assert _curriculum_ramp(-0.5, 0.5, 0.99, 0.5) == pytest.approx(0.5)
+
+    def test_descending_ramp_for_ponder(self):
+        # start>end(ponder を下げる方向)でも線形に動く
+        assert _curriculum_ramp(0.25, 0.02, 0.0, 0.5) == pytest.approx(0.01)
+
+
+class TestApplyACTCurriculum:
+    """apply_act_curriculum: 共有 cfg を進捗に応じて in-place 更新する。"""
+
+    def test_mutates_shared_cfg_at_start(self):
+        m = _FakeModel(_FakeCfg())
+        thr, pon = apply_act_curriculum(m, _curriculum_args(), step=0, grand_total=1000)
+        assert thr == pytest.approx(0.5)
+        assert pon == pytest.approx(0.02)
+        # 返り値だけでなく cfg 自体が書き換わる(forward が読むのは cfg)
+        assert m.cfg.act_threshold == pytest.approx(0.5)
+        assert m.cfg.act_aux_loss_weight == pytest.approx(0.02)
+
+    def test_threshold_increases_monotonically(self):
+        m = _FakeModel(_FakeCfg())
+        args = _curriculum_args()
+        vals = []
+        for s in (0, 100, 250, 400, 500):
+            apply_act_curriculum(m, args, step=s, grand_total=1000)
+            vals.append(m.cfg.act_threshold)
+        assert vals == sorted(vals)          # 単調非減少
+        assert vals[0] < vals[-1]            # 実際に上昇
+
+    def test_ponder_decreases_monotonically(self):
+        m = _FakeModel(_FakeCfg())
+        args = _curriculum_args()
+        vals = []
+        for s in (0, 100, 250, 400, 500):
+            apply_act_curriculum(m, args, step=s, grand_total=1000)
+            vals.append(m.cfg.act_aux_loss_weight)
+        assert vals == sorted(vals, reverse=True)  # 単調非増加
+        assert vals[0] > vals[-1]
+
+    def test_holds_end_after_warmup_completes(self):
+        m = _FakeModel(_FakeCfg())
+        args = _curriculum_args()
+        apply_act_curriculum(m, args, step=500, grand_total=1000)   # warmup 完了点
+        apply_act_curriculum(m, args, step=999, grand_total=1000)   # それ以降
+        assert m.cfg.act_threshold == pytest.approx(0.99)
+        assert m.cfg.act_aux_loss_weight == pytest.approx(0.0)
+
+    def test_warmup_frac_one_ramps_over_whole_run(self):
+        # frac=1.0 なら学習全体でランプ。progress=step/(grand_total-1) なので
+        # step=500, grand_total=1001 でちょうど中点(500/1000=0.5)。
+        m = _FakeModel(_FakeCfg())
+        args = _curriculum_args(act_warmup_frac=1.0)
+        apply_act_curriculum(m, args, step=500, grand_total=1001)
+        assert m.cfg.act_threshold == pytest.approx(0.5 + (0.99 - 0.5) * 0.5)
+
+    def test_last_step_reaches_full_progress(self):
+        # 最終ステップ(step=grand_total-1)で progress=1.0 → end に到達
+        m = _FakeModel(_FakeCfg())
+        args = _curriculum_args(act_warmup_frac=1.0)
+        apply_act_curriculum(m, args, step=999, grand_total=1000)
+        assert m.cfg.act_threshold == pytest.approx(0.99)
+
+    def test_default_ponder_is_noop(self):
+        # ponder_weight_start=end=0(既定)なら act_aux_loss_weight は 0 のまま
+        m = _FakeModel(_FakeCfg(act_aux_loss_weight=0.0))
+        args = _curriculum_args(ponder_weight_start=0.0, ponder_weight_end=0.0)
+        for s in (0, 250, 500, 999):
+            apply_act_curriculum(m, args, step=s, grand_total=1000)
+            assert m.cfg.act_aux_loss_weight == pytest.approx(0.0)
 
 
 if __name__ == "__main__":
