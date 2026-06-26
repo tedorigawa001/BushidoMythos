@@ -26,17 +26,31 @@ Recurrent Depth Transformer は ACT(Adaptive Computation Time, Graves 2016)で
 される単一オブジェクトなので、**学習ループ側で `model.cfg` を書き換えるだけ**で次の
 forward に反映される。モデル本体は一切変更しない。
 
-### グローバル進捗で測る
-ランプ基準は**全フェーズ(1〜5)合計ステップ**。フェーズ境界に依存せず、学習全体で
-一貫した浅→深カリキュラムになる。
+### 「今回学習する区間」を起点に進捗を測る（anchor 方式）
+ランプ基準は**全フェーズ合計ステップ(grand_total)**だが、進捗は `anchor_step`
+(今回の学習が始まる step)を起点に測る:
 
 ```
-progress = step / max(grand_total - 1, 1)        # 最終ステップで 1.0
-value    = ramp(progress, start, end, warmup_frac) # warmup_frac までに start→end、以降 end 固定
+span     = max(grand_total - 1 - anchor_step, 1)
+progress = (step - anchor_step) / span             # 今回学習区間の末尾で 1.0
+value    = ramp(progress, start, end, warmup_frac)  # warmup_frac までに start→end、以降 end 固定
 ```
 
-`warmup_frac` は「全学習のうち何割でランプを完了するか」。既定 0.5(前半で end へ
-到達し、後半は深いまま安定学習)。`warmup_frac<=0` はランプ無し=即 end(無効と同義)。
+`anchor_step` は resume 時の開始 step(`--resume` で読んだ step、無ければ 0)。
+
+- **フルラン(phase1 から / 新規)**: `anchor_step=0` → 全フェーズ通しでランプ。
+- **phase2-5 のみ再学習**(`--resume phase1_final.pt`, step=30000 起点): `anchor_step=30000`
+  → **phase2-5 の区間で start→end をランプ**。
+
+> ⚠️ もし anchor を使わず全フェーズ通しの進捗(step/grand_total)で測ると、phase1_final
+> (step≈30000)から resume した時点で進捗が既に warmup_frac を超え、**閾値が end 固定=
+> カリキュラムが無効化**される。anchor 方式はこれを回避する設計(回帰テストあり)。
+
+`warmup_frac` は「今回学習区間のうち何割でランプを完了するか」。既定 0.5。
+`warmup_frac<=0` はランプ無し=即 end(無効と同義)。
+
+> 補足: 同一カリキュラムランの途中で再 resume すると anchor が resume 点に取り直され、
+> 残り区間でランプし直す。可能なら phase2-5 は 1 セッションで通すのが望ましい。
 
 ### ACT remainder trick との整合
 閾値 < 1 でも ACT は数値的に安全。停止ステップで残り確率質量を最終重みに割り当てる
@@ -58,19 +72,28 @@ remainder trick が `still_running` ゲートで `threshold<1` を正しく処�
 既定では `--act_curriculum` 未指定 = 完全後方互換。ponder は既定 0→0(無効)で、
 **閾値が主レバー、ponder は補助**。
 
-### 実行例
+### 実行例（phase2-5 を phase1_final から再学習）
+
+phase は累積境界で管理されるため、phase1 の続きは `--resume phase1_final.pt`
+(step を p1_total に設定)+ `--phase 2` で起動する(base_ckpt は元の素体)。
+`--resume` を使わず `--base_ckpt phase1_final.pt` だけにすると step=0 から始まり
+phase 境界がずれる(phase1 を再走する)ので注意。
 
 ```bash
 python3 training/finance_pretrain.py \
-  --base_ckpt checkpoints/finance_a100_v2/phase1_final.pt \
+  --base_ckpt checkpoints/a100_v2_gpt2vocab/final.pt \
+  --resume    checkpoints/finance_a100_v2/phase1_final.pt \
+  --phase 2 \
+  --phase1_steps 30000 --phase2_steps 8000 ... \
   --act_curriculum \
   --act_threshold_start 0.5 --act_warmup_frac 0.5 \
   --ponder_weight_start 0.02 --ponder_weight_end 0.0 \
-  ...（既存の phase/steps/seed 等）
+  ...（既存の batch/seq_len/seed 等）
 ```
 
-学習ログに `act_thr=`(と ponder>0 時は `ponder=`)が出力され、進捗どおり閾値が
-上昇しているか確認できる。
+このとき `anchor_step=30000` となり、phase2-5 の区間で閾値が 0.5→0.99 にランプする。
+フェーズ開始行に `ramp over steps 30000→…`、ログ行に `act_thr=`(ponder>0 時は
+`ponder=`)が出力され、進捗どおり閾値が上昇しているか確認できる。
 
 ## 挙動（start=0.5→end=0.99, warmup_frac=0.5, ponder 0.02→0）
 
@@ -86,16 +109,18 @@ python3 training/finance_pretrain.py \
 すべて [training/finance_pretrain.py](../finance_pretrain.py):
 
 - `_curriculum_ramp()` — 線形ランプ→hold（純関数）
-- `apply_act_curriculum()` — グローバル進捗で `model.cfg` を in-place 更新（返り値は現在値）
-- `run_phase()` — 全フェーズ合計から `act_grand_total` を算出し、毎 micro-step で適用。
-  フェーズ頭にスケジュール表示、ログ行に `act_thr=` を追加
-- `train()` — `--act_threshold_end` の既定 -1 を `cfg.act_threshold` に解決
+- `apply_act_curriculum()` — `anchor_step` 起点の進捗で `model.cfg` を in-place 更新（返り値は現在値）
+- `run_phase()` — 全フェーズ合計から `act_grand_total` を算出し、`act_anchor_step` 起点で
+  毎 micro-step に適用。フェーズ頭にスケジュール表示(ramp 区間)、ログ行に `act_thr=` を追加
+- `train()` — resume 後の step を `act_anchor_step` に捕捉して全 `run_phase` に伝搬。
+  `--act_threshold_end` の既定 -1 を `cfg.act_threshold` に解決
 
 ## テスト
 
 [tests/test_finance_pretrain.py](../../tests/test_finance_pretrain.py):
 `TestCurriculumRamp`（ランプの数値挙動）/ `TestApplyACTCurriculum`（共有 cfg の
-in-place 更新・閾値単調増・ponder 単調減・warmup 後 hold・既定 no-op）。計 14 ケース。
+in-place 更新・閾値単調増・ponder 単調減・warmup 後 hold・既定 no-op・**anchor 起点の
+区間ランプ**・**anchor=0 のグローバル進捗回帰**）。計 16 ケース。
 
 ## 留意点・今後
 

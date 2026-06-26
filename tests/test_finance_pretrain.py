@@ -812,6 +812,24 @@ class TestApplyACTCurriculum:
             apply_act_curriculum(m, args, step=s, grand_total=1000)
             assert m.cfg.act_aux_loss_weight == pytest.approx(0.0)
 
+    def test_anchor_ramps_over_resumed_span(self):
+        # phase1_final(step=30000)から resume し grand_total=52000 を学習する状況。
+        # anchor=30000 なら開始(step=30000)で start、区間後半で end に到達する。
+        m = _FakeModel(_FakeCfg())
+        args = _curriculum_args(act_warmup_frac=0.5)
+        apply_act_curriculum(m, args, step=30000, grand_total=52000, anchor_step=30000)
+        assert m.cfg.act_threshold == pytest.approx(0.5)           # 区間先頭=start
+        apply_act_curriculum(m, args, step=45000, grand_total=52000, anchor_step=30000)
+        assert m.cfg.act_threshold == pytest.approx(0.99)          # warmup超え=end
+
+    def test_anchor_zero_keeps_global_progress(self):
+        # 回帰: anchor=0(既定)だと resume 開始 step で進捗が既に warmup を超え、
+        # 閾値が end 固定=カリキュラム無効になる(anchor 指定がこれを救う対比)。
+        m = _FakeModel(_FakeCfg())
+        args = _curriculum_args(act_warmup_frac=0.5)
+        apply_act_curriculum(m, args, step=30000, grand_total=52000, anchor_step=0)
+        assert m.cfg.act_threshold == pytest.approx(0.99)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "--verbose"])

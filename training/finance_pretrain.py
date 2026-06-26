@@ -713,18 +713,24 @@ def _curriculum_ramp(progress: float, start: float, end: float,
 
 
 def apply_act_curriculum(model, args: argparse.Namespace,
-                         step: int, grand_total: int) -> tuple[float, float]:
-    """ACT カリキュラム: グローバル進捗に応じて act_threshold / ponder weight を更新。
+                         step: int, grand_total: int,
+                         anchor_step: int = 0) -> tuple[float, float]:
+    """ACT カリキュラム: 学習進捗に応じて act_threshold / ponder weight を更新。
 
     モデルは forward 時に毎回 cfg を読むため、共有 cfg オブジェクトを書き換えるだけで
     次の forward から反映される(モデルコード非改変)。返り値は現在値(ログ用)。
+
+    進捗は anchor_step(今回の学習が始まった step)から grand_total までの「今回学習する
+    区間」で測る。phase1_final から resume して phase2-5 のみ学習する場合でも、その区間で
+    start→end をランプできる(anchor_step=0 なら全フェーズ通しの挙動)。
 
     - act_threshold: start→end へ線形に「上げる」と、初期は浅いループで早期停止し、
       後半ほど深い推論を解禁する(浅→深カリキュラム)。
     - act_aux_loss_weight(ponder cost): start→end へ「下げる」と、初期は余分なループに
       強くペナルティを掛け、後半で緩める。閾値ランプと同方向(浅→深)に効く補助レバー。
     """
-    progress = step / max(grand_total - 1, 1)
+    span = max(grand_total - 1 - anchor_step, 1)
+    progress = (step - anchor_step) / span
     thr = _curriculum_ramp(progress, args.act_threshold_start,
                            args.act_threshold_end, args.act_warmup_frac)
     pon = _curriculum_ramp(progress, args.ponder_weight_start,
@@ -899,6 +905,7 @@ def run_phase(
     phase5_steps: int = 0,
     resume_path: str = None,
     replay_dataset=None,
+    act_anchor_step: int = 0,
 ) -> int:
     total_loss = 0.0
     total_ce   = 0.0
@@ -958,9 +965,12 @@ def run_phase(
     if replay_iter is not None:
         print(f"  memory replay: {replay_ratio*100:.0f}% of batches drawn from general-language anchor (anti-forgetting)")
     if act_curriculum:
+        span = max(act_grand_total - 1 - act_anchor_step, 1)
+        ramp_end_step = act_anchor_step + int(args.act_warmup_frac * span)
         print(f"  ACT curriculum: act_threshold {args.act_threshold_start}→{args.act_threshold_end}"
               f"  ponder {args.ponder_weight_start}→{args.ponder_weight_end}"
-              f"  (ramp over first {args.act_warmup_frac*100:.0f}% of {act_grand_total} steps)")
+              f"  (ramp over steps {act_anchor_step}→{ramp_end_step} of {act_grand_total};"
+              f" warmup_frac={args.act_warmup_frac})")
     print(f"{'='*60}\n")
 
     # Reset peak memory stats at phase start so the first [VRAM] log reflects
@@ -1014,7 +1024,8 @@ def run_phase(
             # ACT カリキュラム: グローバル進捗に応じて act_threshold / ponder を更新
             # (forward は毎回 cfg を読むので、ここでの書き換えが次の forward に効く)
             if act_curriculum:
-                apply_act_curriculum(model, args, step, act_grand_total)
+                apply_act_curriculum(model, args, step, act_grand_total,
+                                     anchor_step=act_anchor_step)
 
             with torch.autocast(autocast_device, dtype=amp_dtype, enabled=use_amp):
                 logits = model(x, n_loops=n_loops)
@@ -1227,6 +1238,10 @@ def train(args: argparse.Namespace) -> None:
         step = load_checkpoint(resume_path, model, optimizer, scheduler,
                                allow_unsafe=args.allow_unsafe_checkpoint)
 
+    # ACT カリキュラムのランプ起点: 今回の学習が始まる step。phase1_final から
+    # resume して phase2-5 のみ学習する場合、その区間(step→grand_total)でランプする。
+    act_anchor_step = step
+
     # ── torch.compile (after all checkpoint loading) ──────────
     if args.compile:
         print("Compiling model with torch.compile() …")
@@ -1256,6 +1271,7 @@ def train(args: argparse.Namespace) -> None:
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
+            act_anchor_step=act_anchor_step,
         )
         if args.replay_ratio > 0:
             replay_ds = ds1  # 一般言語アンカーを再利用（WikiText を二重に保持しない）
@@ -1288,6 +1304,7 @@ def train(args: argparse.Namespace) -> None:
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
+            act_anchor_step=act_anchor_step,
         )
 
     # ── Phase 3: Finance domain mix (financial-news + finance-alpaca) ───────
@@ -1304,6 +1321,7 @@ def train(args: argparse.Namespace) -> None:
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
+            act_anchor_step=act_anchor_step,
         )
 
     # ── Phase 4: Trading methodology SFT (forecaster + sentiment) ─
@@ -1320,6 +1338,7 @@ def train(args: argparse.Namespace) -> None:
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
+            act_anchor_step=act_anchor_step,
         )
 
     # ── Phase 5: Trading discipline / risk-management QA ─────────
@@ -1336,6 +1355,7 @@ def train(args: argparse.Namespace) -> None:
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
+            act_anchor_step=act_anchor_step,
         )
 
     # ── Final checkpoint ──────────────────────────────────────
