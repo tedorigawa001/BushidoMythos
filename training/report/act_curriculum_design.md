@@ -49,8 +49,22 @@ value    = ramp(progress, start, end, warmup_frac)  # warmup_frac までに star
 `warmup_frac` は「今回学習区間のうち何割でランプを完了するか」。既定 0.5。
 `warmup_frac<=0` はランプ無し=即 end(無効と同義)。
 
-> 補足: 同一カリキュラムランの途中で再 resume すると anchor が resume 点に取り直され、
-> 残り区間でランプし直す。可能なら phase2-5 は 1 セッションで通すのが望ましい。
+### フェーズを別プロセスで分割実行する場合は `--act_anchor_step` を固定する
+Colab notebook は phase2/3/4/5 を**別プロセス**(各 `--phase N --resume 前フェーズ`)で
+回す。anchor を自動(=各プロセスの resume step)にすると、**フェーズ頭ごとに anchor が
+取り直され、閾値が毎回 start にリセットされる**(ノコギリ波)。
+
+→ 全フェーズに **`--act_anchor_step <phase1 合計 step>`(例 30000)を明示**で渡すと、
+別プロセスをまたいで grand_total 区間の連続ランプになる。`grand_total` は phaseN_steps
+から計算され全セルで同一なので、anchor を揃えるだけで進捗が一致する。
+
+| 起点 | phase2 別プロセス | phase3 別プロセス | … |
+|---|---|---|---|
+| 自動(resume step) | 0.5→0.86 | **0.5**→…(リセット) | 毎回リセット |
+| `--act_anchor_step 30000` 固定 | 0.5→0.86 | 0.86→…(連続) | 連続 |
+
+Colab 切断後の再 resume でも同じ値を渡せばランプが再現する(自動だと再 resume 点で
+取り直されるため、明示指定を推奨)。
 
 ### ACT remainder trick との整合
 閾値 < 1 でも ACT は数値的に安全。停止ステップで残り確率質量を最終重みに割り当てる
@@ -85,13 +99,15 @@ python3 training/finance_pretrain.py \
   --resume    checkpoints/finance_a100_v2/phase1_final.pt \
   --phase 2 \
   --phase1_steps 30000 --phase2_steps 8000 ... \
-  --act_curriculum \
+  --act_curriculum --act_anchor_step 30000 \
   --act_threshold_start 0.5 --act_warmup_frac 0.5 \
   --ponder_weight_start 0.02 --ponder_weight_end 0.0 \
   ...（既存の batch/seq_len/seed 等）
 ```
 
-このとき `anchor_step=30000` となり、phase2-5 の区間で閾値が 0.5→0.99 にランプする。
+`--act_anchor_step 30000`(phase1 合計 step)を全フェーズセルに渡すことで、別プロセス
+でも phase2-5 の区間で閾値が 0.5→0.99 に連続ランプする(指定しないと各フェーズ頭で
+start にリセットされる。上の「別プロセス分割実行」を参照)。
 フェーズ開始行に `ramp over steps 30000→…`、ログ行に `act_thr=`(ponder>0 時は
 `ponder=`)が出力され、進捗どおり閾値が上昇しているか確認できる。
 
@@ -112,8 +128,8 @@ python3 training/finance_pretrain.py \
 - `apply_act_curriculum()` — `anchor_step` 起点の進捗で `model.cfg` を in-place 更新（返り値は現在値）
 - `run_phase()` — 全フェーズ合計から `act_grand_total` を算出し、`act_anchor_step` 起点で
   毎 micro-step に適用。フェーズ頭にスケジュール表示(ramp 区間)、ログ行に `act_thr=` を追加
-- `train()` — resume 後の step を `act_anchor_step` に捕捉して全 `run_phase` に伝搬。
-  `--act_threshold_end` の既定 -1 を `cfg.act_threshold` に解決
+- `train()` — `--act_anchor_step`(既定 -1=resume step 自動)を解決して全 `run_phase`
+  に伝搬。`--act_threshold_end` の既定 -1 を `cfg.act_threshold` に解決
 
 ## テスト
 

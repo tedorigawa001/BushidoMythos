@@ -813,6 +813,30 @@ def save_checkpoint(
     print(f"  → Saved: {path}")
 
 
+def _optimizer_state_compatible(optimizer, saved_state) -> bool:
+    """保存された optimizer state が現在の optimizer と構造的に互換か判定する。
+
+    bitsandbytes の 8-bit optimizer は per-param state に 'state1'/'state2' を持ち、
+    torch の AdamW は 'exp_avg'/'exp_avg_sq' を持つ。両者を混在ロードすると
+    load_state_dict 自体は通るが step 時に KeyError('state1') 等で壊れるため、
+    optimizer_type が記録されていない旧 checkpoint でも構造から弾けるようにする。
+    """
+    sample_keys: set = set()
+    for s in (saved_state.get("state") or {}).values():
+        sample_keys = set(s.keys())
+        break
+    if not sample_keys:
+        return True  # state 空(未ステップ)なら何にでもロード可
+    is_8bit = "bitsandbytes" in type(optimizer).__module__.lower()
+    saved_is_8bit = "state1" in sample_keys
+    saved_is_fp32 = "exp_avg" in sample_keys
+    if is_8bit and saved_is_fp32:
+        return False  # fp32 state → 8-bit optimizer
+    if (not is_8bit) and saved_is_8bit:
+        return False  # 8-bit state → fp32 optimizer
+    return True
+
+
 def load_checkpoint(path: str, model, optimizer, scheduler, scaler=None, allow_unsafe: bool = False):
     print(f"Resuming from: {path}")
     ckpt = _safe_torch_load(path, allow_unsafe=allow_unsafe)
@@ -836,10 +860,15 @@ def load_checkpoint(path: str, model, optimizer, scheduler, scaler=None, allow_u
         # 合わず壊れる。不一致/失敗時は警告してリセット（model/scheduler は継続）。
         saved_optim = ckpt.get("optimizer_type")
         cur_optim = type(optimizer).__name__
-        if saved_optim is not None and saved_optim != cur_optim:
-            print(f"  [warn] optimizer 種別が不一致 (保存={saved_optim} / 現在={cur_optim})。"
-                  "optimizer state を読み込まずリセットします（resume では --optim8bit の有無を"
-                  "揃えると momentum も継続できます）。")
+        type_mismatch = saved_optim is not None and saved_optim != cur_optim
+        # optimizer_type が無い旧 checkpoint でも state 構造から非互換を検出する
+        # (例: fp32 AdamW state を --optim8bit の AdamW8bit にロード → step で KeyError)
+        struct_incompatible = not _optimizer_state_compatible(optimizer, ckpt["optimizer_state"])
+        if type_mismatch or struct_incompatible:
+            why = (f"種別不一致 (保存={saved_optim} / 現在={cur_optim})" if type_mismatch
+                   else "state 構造が現在の optimizer と非互換 (8-bit ⇄ fp32)")
+            print(f"  [warn] optimizer {why}。optimizer state を読み込まずリセットします"
+                  "（resume では --optim8bit の有無を揃えると momentum も継続できます）。")
         else:
             try:
                 optimizer.load_state_dict(ckpt["optimizer_state"])
@@ -1238,9 +1267,14 @@ def train(args: argparse.Namespace) -> None:
         step = load_checkpoint(resume_path, model, optimizer, scheduler,
                                allow_unsafe=args.allow_unsafe_checkpoint)
 
-    # ACT カリキュラムのランプ起点: 今回の学習が始まる step。phase1_final から
-    # resume して phase2-5 のみ学習する場合、その区間(step→grand_total)でランプする。
-    act_anchor_step = step
+    # ACT カリキュラムのランプ起点。既定(-1)は今回の resume step を自動採用。
+    # フェーズを別プロセスで分割実行する場合は --act_anchor_step に固定値(=phase1 合計
+    # step)を渡すことで、別プロセスをまたいで連続ランプにできる(各 resume step で
+    # 起点がリセットされるのを防ぐ)。
+    act_anchor_step = args.act_anchor_step if args.act_anchor_step >= 0 else step
+    if args.act_curriculum:
+        print(f"[ACT curriculum] anchor_step={act_anchor_step} "
+              f"({'explicit' if args.act_anchor_step >= 0 else 'auto=resume step'})")
 
     # ── torch.compile (after all checkpoint loading) ──────────
     if args.compile:
@@ -1492,6 +1526,11 @@ def parse_args() -> argparse.Namespace:
                         "初期に余分なループを抑えたいとき >0 に。既定 0=無効")
     p.add_argument("--ponder_weight_end", type=float, default=0.0,
                    help="act_curriculum 時の終了 ponder cost (default: 0)。start>end で後半ほど緩める")
+    p.add_argument("--act_anchor_step", type=int, default=-1,
+                   help="ACT カリキュラムのランプ起点 step (default: -1=今回の resume step を自動採用)。"
+                        "フェーズを別プロセスで分割実行する場合、全フェーズに同じ値(=phase1 合計 step)"
+                        "を渡すとランプが連続する。指定しないと各プロセスが自分の resume step を起点に"
+                        "してしまい、フェーズ毎に start へリセットされる。")
 
     # Memory replay (anti-forgetting)
     p.add_argument("--replay_ratio", type=float, default=0.0,

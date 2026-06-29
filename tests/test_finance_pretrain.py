@@ -38,6 +38,7 @@ from training.finance_pretrain import (
     make_optimizer,
     _curriculum_ramp,
     apply_act_curriculum,
+    _optimizer_state_compatible,
 )
 from chat import find_latest_ckpt
 from bushido_mythos import MythosConfig, BushidoMythos
@@ -829,6 +830,44 @@ class TestApplyACTCurriculum:
         args = _curriculum_args(act_warmup_frac=0.5)
         apply_act_curriculum(m, args, step=30000, grand_total=52000, anchor_step=0)
         assert m.cfg.act_threshold == pytest.approx(0.99)
+
+
+class _Fp32Opt:
+    """torch AdamW を模した optimizer(__module__ で 8-bit 判定される)。"""
+class _8bitOpt:
+    pass
+_Fp32Opt.__module__ = "torch.optim.adamw"
+_8bitOpt.__module__ = "bitsandbytes.optim.adamw"
+
+
+def _fp32_state():
+    return {"state": {0: {"step": 5, "exp_avg": 1, "exp_avg_sq": 2}}}
+
+
+def _8bit_state():
+    return {"state": {0: {"step": 5, "state1": 1, "state2": 2}}}
+
+
+class TestOptimizerStateCompatible:
+    """8-bit ⇄ fp32 の optimizer state 混在を構造から検出する(KeyError 'state1' 回帰)。"""
+
+    def test_fp32_state_into_fp32_optimizer_ok(self):
+        assert _optimizer_state_compatible(_Fp32Opt(), _fp32_state()) is True
+
+    def test_8bit_state_into_8bit_optimizer_ok(self):
+        assert _optimizer_state_compatible(_8bitOpt(), _8bit_state()) is True
+
+    def test_fp32_state_into_8bit_optimizer_rejected(self):
+        # 本件の再現: phase1(fp32 AdamW)を --optim8bit で resume
+        assert _optimizer_state_compatible(_8bitOpt(), _fp32_state()) is False
+
+    def test_8bit_state_into_fp32_optimizer_rejected(self):
+        assert _optimizer_state_compatible(_Fp32Opt(), _8bit_state()) is False
+
+    def test_empty_state_is_compatible(self):
+        # 未ステップ(state 空)なら何にでもロード可
+        assert _optimizer_state_compatible(_8bitOpt(), {"state": {}}) is True
+        assert _optimizer_state_compatible(_Fp32Opt(), {}) is True
 
 
 if __name__ == "__main__":
