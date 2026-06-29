@@ -39,6 +39,7 @@ from training.finance_pretrain import (
     _curriculum_ramp,
     apply_act_curriculum,
     _optimizer_state_compatible,
+    validate_act_curriculum_args,
 )
 from chat import find_latest_ckpt
 from bushido_mythos import MythosConfig, BushidoMythos
@@ -868,6 +869,38 @@ class TestOptimizerStateCompatible:
         # 未ステップ(state 空)なら何にでもロード可
         assert _optimizer_state_compatible(_8bitOpt(), {"state": {}}) is True
         assert _optimizer_state_compatible(_Fp32Opt(), {}) is True
+
+
+class TestValidateACTCurriculumArgs:
+    """ACT カリキュラム CLI の値域検証。"""
+
+    def test_valid_args_pass(self):
+        validate_act_curriculum_args(_curriculum_args())  # 例外なし
+
+    def test_threshold_zero_rejected(self):
+        with pytest.raises(ValueError, match="act_threshold_start"):
+            validate_act_curriculum_args(_curriculum_args(act_threshold_start=0.0))
+
+    def test_threshold_above_one_rejected(self):
+        with pytest.raises(ValueError, match="act_threshold_end"):
+            validate_act_curriculum_args(_curriculum_args(act_threshold_end=1.2))
+
+    def test_threshold_one_is_allowed(self):
+        validate_act_curriculum_args(_curriculum_args(act_threshold_end=1.0))  # (0,1] の上端 OK
+
+    def test_warmup_frac_out_of_range_rejected(self):
+        with pytest.raises(ValueError, match="act_warmup_frac"):
+            validate_act_curriculum_args(_curriculum_args(act_warmup_frac=1.5))
+
+    def test_warmup_frac_zero_allowed(self):
+        validate_act_curriculum_args(_curriculum_args(act_warmup_frac=0.0))  # [0,1] 下端 OK
+
+    def test_negative_ponder_rejected(self):
+        with pytest.raises(ValueError, match="ponder_weight_start"):
+            validate_act_curriculum_args(_curriculum_args(ponder_weight_start=-0.1))
+
+    def test_zero_ponder_allowed(self):
+        validate_act_curriculum_args(_curriculum_args(ponder_weight_start=0.0, ponder_weight_end=0.0))
 
 
 if __name__ == "__main__":

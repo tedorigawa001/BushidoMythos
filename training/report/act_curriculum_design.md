@@ -140,9 +140,18 @@ in-place 更新・閾値単調増・ponder 単調減・warmup 後 hold・既定 
 
 ## 留意点・今後
 
+- **⚠️ `--compile` とは両立しない(現状)**: `apply_act_curriculum` が毎ステップ Python 属性
+  `cfg.act_threshold` を書き換え、forward 内で読むため、`torch.compile` の guard 再評価で
+  再コンパイルが多発する。現状は **`--act_curriculum` 時に compile を自動無効化**し、Colab
+  notebook も `ACT_CURRICULUM=True` のとき `USE_COMPILE=False` にしている。
+  **恒久対応**は `act_threshold` / `act_aux_loss_weight` を `persistent=False` の tensor buffer
+  にして in-place 更新する形(buffer 読みなら値変更で再コンパイルされず、state_dict にも
+  載らないので checkpoint 互換も保てる)。これは model 本体(main.py)の変更になるため別対応。
+- **CLI 値域は `validate_act_curriculum_args` で検証**: threshold ∈ (0,1]、warmup_frac ∈ [0,1]、
+  ponder_weight ≥ 0。特に ponder<0 は補助損失が負になり余分ループを報酬化するため弾く。
 - 検証は CPU でのスケジュール単体テストまで。**実効果(finance PPL・ループ安定性)は
   GPU/Colab での学習で要計測**。比較は「`--act_curriculum` あり vs なし(同 seed・同
-  steps)」で行う。
+  steps・同 seq_len)」で行う。
 - ramp は線形のみ。必要なら cosine 等への拡張は `_curriculum_ramp` 差し替えで対応可能。
 - ponder cost を強くかけると停止が早まりすぎる恐れ。まずは閾値ランプ単独 → 効果を見て
   ponder を少量(0.01〜0.02)から併用する運用を推奨。

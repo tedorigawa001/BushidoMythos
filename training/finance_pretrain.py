@@ -712,6 +712,27 @@ def _curriculum_ramp(progress: float, start: float, end: float,
     return start + (end - start) * frac
 
 
+def validate_act_curriculum_args(args: argparse.Namespace) -> None:
+    """ACT カリキュラム CLI の値域を検証する(不正なら ValueError)。
+
+    - act_threshold_start/end: (0, 1]  — ACT 停止確率の累積閾値
+    - act_warmup_frac: [0, 1]
+    - ponder_weight_start/end: >= 0  — 負値は余分ループを報酬化してしまう
+    """
+    for nm in ("act_threshold_start", "act_threshold_end"):
+        v = getattr(args, nm)
+        if not (0.0 < v <= 1.0):
+            raise ValueError(f"--{nm} は (0, 1] の範囲で指定してください (got {v})。"
+                             "ACT 停止確率の累積閾値です。")
+    if not (0.0 <= args.act_warmup_frac <= 1.0):
+        raise ValueError(f"--act_warmup_frac は [0, 1] で指定してください (got {args.act_warmup_frac})。")
+    for nm in ("ponder_weight_start", "ponder_weight_end"):
+        v = getattr(args, nm)
+        if v < 0.0:
+            raise ValueError(f"--{nm} は >= 0 で指定してください (got {v})。"
+                             "負値は余分なループを報酬化してしまいます。")
+
+
 def apply_act_curriculum(model, args: argparse.Namespace,
                          step: int, grand_total: int,
                          anchor_step: int = 0) -> tuple[float, float]:
@@ -1245,6 +1266,20 @@ def train(args: argparse.Namespace) -> None:
     # ── ACT curriculum: 終了閾値の既定(-1)は cfg.act_threshold を採用 ──
     if args.act_curriculum and args.act_threshold_end < 0:
         args.act_threshold_end = cfg.act_threshold
+
+    # ── ACT curriculum: 値域チェック ──
+    if args.act_curriculum:
+        validate_act_curriculum_args(args)
+
+    # ── ACT curriculum × torch.compile は両立しない(暫定対応) ──
+    # apply_act_curriculum が毎ステップ Python 属性 cfg.act_threshold を書き換え、
+    # forward 内で読むため、torch.compile の guard 再評価で再コンパイルが多発する。
+    # 当面は compile を自動無効化して安全側に倒す(恒久対応は閾値の tensor buffer 化)。
+    if args.act_curriculum and args.compile:
+        print("  [warn] --act_curriculum と --compile は両立しません(閾値変更ごとに再コンパイル)。"
+              "compile を無効化して継続します。高速化が必要なら act_threshold を固定して compile を使うか、"
+              "閾値の tensor buffer 化(恒久対応)を待ってください。")
+        args.compile = False
 
     # ── Phase step totals ─────────────────────────────────────
     p1_total = args.phase1_steps
