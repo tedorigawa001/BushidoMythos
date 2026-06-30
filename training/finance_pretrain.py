@@ -834,6 +834,20 @@ def save_checkpoint(
     print(f"  → Saved: {path}")
 
 
+def rotate_step_checkpoints(ckpt_dir: Path, keep_last_n: int) -> None:
+    """古い step_*.pt を削除し、直近 keep_last_n 世代だけ残す。
+
+    phaseN_final.pt / final.pt はこの glob にマッチしないため対象外。
+    keep_last_n <= 0 はローテーション無効(無制限保持)。
+    """
+    if keep_last_n <= 0:
+        return
+    candidates = sorted(Path(ckpt_dir).glob("step_*.pt"))
+    for old in candidates[:-keep_last_n]:
+        old.unlink()
+        print(f"  → Rotated out (deleted): {old}")
+
+
 def _optimizer_state_compatible(optimizer, saved_state) -> bool:
     """保存された optimizer state が現在の optimizer と構造的に互換か判定する。
 
@@ -1162,6 +1176,7 @@ def run_phase(
                     phase3_steps=phase3_steps, phase4_steps=phase4_steps,
                     phase5_steps=phase5_steps, scaler=scaler,
                 )
+                rotate_step_checkpoints(ckpt_dir, args.keep_last_n_steps)
 
     final_path = ckpt_dir / phase_final_name
     save_checkpoint(
@@ -1506,6 +1521,9 @@ def parse_args() -> argparse.Namespace:
                    help="Log frequency (steps)")
     p.add_argument("--save_every",    type=int,   default=2000,
                    help="Checkpoint frequency (steps)")
+    p.add_argument("--keep_last_n_steps", type=int, default=3,
+                   help="step_*.pt の保持世代数。古いものは保存時に自動削除。"
+                        "phaseN_final.pt/final.pt は対象外。0以下で無効化(無制限保持)")
     p.add_argument("--log_file",      type=str,   default=None,
                    help="Path for the training log file (default: <ckpt_dir>/train.log)")
 

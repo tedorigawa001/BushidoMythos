@@ -397,8 +397,16 @@ python training/finance_pretrain.py \
 | `--loop_tail_p` | `0.2` | `curriculum`: probability of sampling the tail (`hi+1..loop_tail_max`) |
 | `--loop_seed` | `0` | `curriculum`: sampler seed; deterministic per `(seed, step)` so it is resume-safe |
 | `--replay_ratio` | `0.0` | Memory replay (anti-forgetting, experimental): in Phase 2+, replace this fraction of batches with a general-language (WikiText-103) anchor. Replay *replaces* (not adds) batches, so effective domain steps shrink — raise total steps to compensate. Pilot: 20% replay cut catastrophic forgetting ~89% while finance held-out PPL improved; sweet spot 5–10% (see `training/exp_replay_pilot.py`) |
+| `--act_curriculum` | `False` | Ramp `act_threshold`/`act_aux_loss_weight` (ponder cost) from shallow to deep over training instead of holding them fixed (experimental, see below). Incompatible with `--compile` — automatically disables compile with a warning when both are set |
+| `--act_threshold_start` | `0.5` | `act_curriculum`: starting ACT threshold (must be in `(0, 1]`) |
+| `--act_threshold_end` | `-1.0` | `act_curriculum`: ending ACT threshold; `-1` resolves to the model's `cfg.act_threshold` |
+| `--act_warmup_frac` | `0.5` | `act_curriculum`: fraction of the run (relative to `--act_anchor_step`) over which the ramp completes; must be in `[0, 1]` |
+| `--ponder_weight_start` | `0.0` | `act_curriculum`: starting ponder-cost weight (must be `>= 0`) |
+| `--ponder_weight_end` | `0.0` | `act_curriculum`: ending ponder-cost weight (must be `>= 0`) |
+| `--act_anchor_step` | `-1` | `act_curriculum`: step the ramp's progress is measured from. `-1` = auto (the resume step). When phases run as separate processes (e.g. Colab cells), pass the same explicit fixed value (e.g. `0`) on every phase to keep the ramp continuous instead of resetting each phase — see [`training/report/act_curriculum_design.md`](training/report/act_curriculum_design.md) |
 | `--lr` | `1e-4` | Peak learning rate |
 | `--save_every` | `2000` | Checkpoint interval in steps |
+| `--keep_last_n_steps` | `3` | Keep only the last N `step_*.pt` checkpoints in `--ckpt_dir`; older ones are deleted automatically right after each save to bound disk usage. Does not touch `phaseN_final.pt`/`final.pt`. `<= 0` disables rotation (keep all) |
 
 Checkpoints save `scheduler_state`, `scaler_state` for float16 training, and phase metadata, so interrupted runs can resume with the same schedule. A phase is skipped automatically if the current step has already passed its endpoint.
 
@@ -413,6 +421,20 @@ A Recurrent-Depth Transformer runs the recurrent block `n_loops` times, so compu
 | Phase 2 onward | 4–8 | sampled with prob `loop_tail_p` |
 
 `fixed`/`curriculum` pass `n_loops` explicitly, overriding the model's internal `cfg.loop_curriculum` sampling. Evaluation should stay at a fixed depth (`eval_perplexity.py --n_loops`, `eval_finance_behavior.py --loops`) and can sweep `4/8/12/16` to measure depth scaling. To give the tail (9–12) its own depth-specific LoRA, build the base checkpoint with a matching `max_loop_iters` (e.g. `make_base_ckpt.py --max_loop_iters 12`). The full plan is in [`training/report/a100_experiment_plan.md`](training/report/a100_experiment_plan.md).
+
+**ACT curriculum (`--act_curriculum`, experimental):**
+
+Holding `act_threshold` fixed for the whole run lets the model halt deep recurrence early before it has learned to use it ("loop collapse"). The curriculum instead ramps `act_threshold` low→high (shallow→deep) and `ponder_weight` high→low over the first `--act_warmup_frac` of training, then holds at the end values:
+
+| Progress (since `--act_anchor_step`) | `act_threshold` | `ponder_weight` |
+|---|---|---|
+| 0% | `--act_threshold_start` | `--ponder_weight_start` |
+| 0–100% of warmup | linear ramp | linear ramp |
+| ≥ `--act_warmup_frac` | `--act_threshold_end` (held) | `--ponder_weight_end` (held) |
+
+Progress is measured from `--act_anchor_step`, not from absolute step 0 — this matters because each phase is normally launched as a separate process (a Colab cell) that resumes from a checkpoint, so the anchor must be a fixed value shared across all phase cells (e.g. `0` for a full run) to get one continuous ramp instead of the curriculum restarting every phase. `--act_threshold_end -1` (default) resolves to the model's own `cfg.act_threshold`.
+
+`--act_curriculum` cannot run with `--compile`: the curriculum mutates `act_threshold`/`act_aux_loss_weight` as plain Python floats every step, which `torch.compile`'s guards treat as a recompile trigger. When both flags are set, compile is force-disabled with a warning rather than thrashing on recompilation. Design rationale, the anchor-step bug history, and measured results are in [`training/report/act_curriculum_design.md`](training/report/act_curriculum_design.md).
 
 **VRAM diagnostics (`--mem_log_every`):**
 
@@ -497,6 +519,8 @@ This project assumes **Google Colab Pro+ with A100 recommended** for the full tr
 5. **Interruptions and resume**
 
    Each phase cell uses `--auto_resume` to resume from the latest `step_*.pt` on Drive. To resume explicitly from `phase*_final.pt`, pass `--resume`. After a session disconnect, rerun cells 1-2 and then rerun the phase cell that was interrupted.
+
+   Only the last `KEEP_LAST_N_STEPS` (default 3, notebook GPU-settings cell) periodic `step_*.pt` checkpoints are kept on Drive — older ones are deleted automatically as new ones are saved, to bound Drive usage. `phaseN_final.pt`/`final.pt` are never rotated out.
 
 > **GPU selection guide:** A100 on Colab Pro+ is the best cost-performance option. T4 also works, but `--compile` is disabled and both batch size and sequence length are reduced, making training roughly 3-4x slower than A100.
 

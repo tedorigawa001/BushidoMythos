@@ -40,6 +40,7 @@ from training.finance_pretrain import (
     apply_act_curriculum,
     _optimizer_state_compatible,
     validate_act_curriculum_args,
+    rotate_step_checkpoints,
 )
 from chat import find_latest_ckpt
 from bushido_mythos import MythosConfig, BushidoMythos
@@ -282,6 +283,39 @@ class TestCheckpoint:
         returned_step = load_checkpoint(str(path), model2, opt2, sched2)
         assert returned_step == 3
         assert step_call_count[0] == 3  # replayed exactly 3 steps
+
+
+class TestRotateStepCheckpoints:
+
+    @staticmethod
+    def _make_steps(ckpt_dir, steps):
+        for s in steps:
+            (ckpt_dir / f"step_{s:06d}.pt").write_bytes(b"x")
+
+    def test_keeps_only_last_n(self, tmp_path):
+        self._make_steps(tmp_path, [1000, 2000, 3000, 4000, 5000])
+        rotate_step_checkpoints(tmp_path, keep_last_n=3)
+        remaining = sorted(p.name for p in tmp_path.glob("step_*.pt"))
+        assert remaining == ["step_003000.pt", "step_004000.pt", "step_005000.pt"]
+
+    def test_keep_le_zero_disables_rotation(self, tmp_path):
+        self._make_steps(tmp_path, [1000, 2000, 3000])
+        rotate_step_checkpoints(tmp_path, keep_last_n=0)
+        assert len(list(tmp_path.glob("step_*.pt"))) == 3
+
+    def test_fewer_files_than_keep_is_noop(self, tmp_path):
+        self._make_steps(tmp_path, [1000, 2000])
+        rotate_step_checkpoints(tmp_path, keep_last_n=3)
+        assert len(list(tmp_path.glob("step_*.pt"))) == 2
+
+    def test_does_not_touch_phase_final_checkpoints(self, tmp_path):
+        self._make_steps(tmp_path, [1000, 2000, 3000])
+        (tmp_path / "phase1_final.pt").write_bytes(b"x")
+        (tmp_path / "final.pt").write_bytes(b"x")
+        rotate_step_checkpoints(tmp_path, keep_last_n=1)
+        assert (tmp_path / "phase1_final.pt").exists()
+        assert (tmp_path / "final.pt").exists()
+        assert len(list(tmp_path.glob("step_*.pt"))) == 1
 
 
 # ---------------------------------------------------------------------------
