@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as _grad_ckpt
 
 try:
-    from flash_attn import flash_attn_func
+    from flash_attn import flash_attn_func  # type: ignore
 
     _HAS_FLASH_ATTN = True
 except ImportError:
@@ -1377,10 +1377,12 @@ class BushidoMythos(nn.Module):
             x = inputs_embeds
             T = x.shape[1]
             device = x.device
-        else:
+        elif input_ids is not None:
             T = input_ids.shape[1]
             device = input_ids.device
             x = self.embed(input_ids)
+        else:
+            raise ValueError("Either input_ids or inputs_embeds must be provided")
 
         if T == 0:
             raise ValueError(
@@ -1559,6 +1561,8 @@ class BushidoMythos(nn.Module):
 
             # Phase 2: continuous thought steps — feed last hidden as next input embedding
             for step in range(steps):
+                if self._last_hidden is None:
+                    raise RuntimeError("self._last_hidden is None but coconut_steps > 0")
                 thought_emb = self._last_hidden[:, -1:, :]  # (B, 1, dim)
                 last_logits = self.forward(
                     inputs_embeds=thought_emb,

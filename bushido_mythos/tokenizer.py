@@ -76,4 +76,4 @@ class MythosTokenizer:
         Returns:
             str: Decoded string representation of the token IDs.
         """
-        return self.tokenizer.decode(token_ids, skip_special_tokens=True)
+        return str(self.tokenizer.decode(token_ids, skip_special_tokens=True))
