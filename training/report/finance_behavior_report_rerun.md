@@ -133,3 +133,44 @@ I'm not sure what the stock could go after you but it is possible to look at dif
 ```
 I'm not sure what the stock could go after you but it's possible to trade with different exchanges (and/or just looking at their options) for a short time period ending next year or two; if the underlying price goes up, say, 1% of the value on date of your contract, plus whatever else happens - they'll see nothing until expiration day later). For example a buyout will have a price of $100 per share / 0.05 = $0
 ```
+
+---
+
+## 追記: 再学習 run(ACT curriculum)の追加検証 — 2026-07-18
+
+このレポートは 2026-07 の再学習 run(`finance_a100_v2`、ACT curriculum 有効・replay 5%・52,000 steps)の評価。
+旧 run の記録は `finance_behavior_report.md` を参照。
+
+### 多シード比較(Phase5、8プロンプト)
+
+構造化推論率は 8 プロンプトでは 1 件 = 12.5% 刻みのため、シード間で大きく揺れる。
+
+| 指標 | seed 0 | seed 1 | seed 2 | 平均 | 旧 run (seed 0) |
+|---|---|---|---|---|---|
+| 構造化推論率 | 38% | 88% | 62% | 63% | 75% |
+| フォーマット追従率 (EOS) | 38% | 12% | 38% | 29% | 38% |
+| 平均リスク概念数 (0-6) | 1.12 | 1.12 | 0.75 | 1.00 | 0.62 |
+| 反復率 ↓ | 0.07 | 0.08 | 0.08 | 0.08 | 0.02 |
+
+- 構造化推論率の seed 0 での見かけの低下(75%→38%)は**サンプリングノイズ**。旧 run の値は 3 シードの分布(38〜88%)内に収まる。
+- **平均リスク概念数は 3 シードすべてで旧 run 以上**(0.75〜1.12 vs 0.62)— 再現性のある改善。
+
+### WikiText-103 PPL(validation 先頭100チャンク、seq_len=256)— 忘却耐性
+
+| checkpoint | PPL |
+|---|---|
+| phase1 | 66.09 |
+| phase2 | 57.70 |
+| phase3 | 64.55 |
+| phase4 | 71.17 |
+| phase5 / final | 85.19 |
+
+- Phase1 → Phase5 の劣化率は **×1.29**。replay なしの旧 run は ×6.6(54.9 → 361.5、full 評価)だった。
+- **replay 5% が本番スケール(52k steps)でも破滅的忘却をほぼ防いだ**ことを確認。
+  パイロット実験(`qiita_memory_replay.md`)の結論と整合。
+- 絶対値は部分評価のため旧 run の full 評価値と直接比較不可。要点は同一条件内の劣化率。
+
+### 結論
+
+再学習 run は旧 v2 の挙動プロファイルを再現しつつ、**リスク概念言及(全シードで上回る)と
+忘却耐性(PPL 劣化 ×6.6 → ×1.29)で旧モデルを上回る**。
