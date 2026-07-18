@@ -15,6 +15,72 @@ except ImportError:
     _HAS_FLASH_ATTN = False
 
 
+class _KVCache(dict):
+    """Dictionary-compatible KV cache with an optional allocation capacity."""
+
+    def __init__(self, capacity: Optional[int] = None):
+        super().__init__()
+        self.capacity = capacity
+
+
+class _CacheEntry(dict):
+    """Public cache views backed by reusable, over-allocated tensors."""
+
+    def __init__(self, capacity: int):
+        super().__init__()
+        self.capacity = capacity
+        self.length = 0
+        self.storage = {}
+
+
+def _append_kv_cache(
+    kv_cache: dict,
+    cache_key: str,
+    tensors: dict,
+) -> dict:
+    """Append detached cache values and return tensors for the current forward."""
+    entry = kv_cache.get(cache_key)
+    old_length = entry.length if isinstance(entry, _CacheEntry) else 0
+    if entry is not None and not isinstance(entry, _CacheEntry):
+        first = next(iter(tensors))
+        old_length = entry[first].shape[1]
+
+    append_length = next(iter(tensors.values())).shape[1]
+    required = old_length + append_length
+    requested_capacity = getattr(kv_cache, "capacity", None)
+    current_capacity = entry.capacity if isinstance(entry, _CacheEntry) else 0
+    capacity = max(required, requested_capacity or 0, max(1, current_capacity * 2))
+
+    needs_allocation = not isinstance(entry, _CacheEntry) or required > entry.capacity
+    if needs_allocation:
+        new_entry = _CacheEntry(capacity)
+        for name, value in tensors.items():
+            shape = list(value.shape)
+            shape[1] = capacity
+            storage = torch.empty(shape, dtype=value.dtype, device=value.device)
+            if entry is not None and old_length:
+                old_value = entry[name]
+                storage[:, :old_length].copy_(old_value)
+            new_entry.storage[name] = storage
+        entry = new_entry
+        kv_cache[cache_key] = entry
+
+    attention_tensors = {}
+    for name, value in tensors.items():
+        entry.storage[name][:, old_length:required].copy_(value.detach())
+        entry[name] = entry.storage[name][:, :required]
+        if torch.is_grad_enabled() and value.requires_grad:
+            if old_length:
+                history = entry.storage[name][:, :old_length]
+                attention_tensors[name] = torch.cat([history, value], dim=1)
+            else:
+                attention_tensors[name] = value
+        else:
+            attention_tensors[name] = entry[name]
+    entry.length = required
+    return attention_tensors
+
+
 @dataclass
 class MythosConfig:
     """
@@ -255,6 +321,7 @@ class GQAttention(nn.Module):
         mask: Optional[torch.Tensor] = None,
         kv_cache: Optional[dict] = None,
         cache_key: str = "default",
+        is_causal: bool = False,
     ) -> torch.Tensor:
         """
         Args:
@@ -276,10 +343,8 @@ class GQAttention(nn.Module):
         k = apply_rope(k, freqs_cis)
 
         if kv_cache is not None:
-            if cache_key in kv_cache:
-                k = torch.cat([kv_cache[cache_key]["k"], k], dim=1)
-                v = torch.cat([kv_cache[cache_key]["v"], v], dim=1)
-            kv_cache[cache_key] = {"k": k.detach(), "v": v.detach()}
+            entry = _append_kv_cache(kv_cache, cache_key, {"k": k, "v": v})
+            k, v = entry["k"], entry["v"]
 
         S = k.shape[1]
         # When KV cache has past tokens, mask is (1,1,T,T) but attn will be
@@ -302,24 +367,29 @@ class GQAttention(nn.Module):
             v = v.to(torch.bfloat16)
             dropout_p = self.dropout_p if self.training else 0.0
             out = flash_attn_func(
-                q, k, v, dropout_p=dropout_p, causal=(mask is not None)
+                q,
+                k,
+                v,
+                dropout_p=dropout_p,
+                causal=is_causal or mask is not None,
             )
             out = out.to(orig_dtype).contiguous().view(B, T, self.n_heads * self.head_dim)
         else:
-            # Fallback: manual scaled dot-product with explicit KV head expansion.
+            # PyTorch SDPA selects the best available fused backend and avoids
+            # materializing the full (B, H, T, S) attention probability tensor.
             k = k.repeat_interleave(self.groups, dim=2)
             v = v.repeat_interleave(self.groups, dim=2)
             q = q.transpose(1, 2)  # (B, H, T, head_dim)
             k = k.transpose(1, 2)
             v = v.transpose(1, 2)
-            scale = self.head_dim**-0.5
-            attn = torch.matmul(q, k.transpose(-2, -1)) * scale
-            if mask is not None:
-                attn = attn + mask
-            attn = F.dropout(
-                F.softmax(attn, dim=-1), p=self.dropout_p, training=self.training
+            out = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=mask,
+                dropout_p=self.dropout_p if self.training else 0.0,
+                is_causal=is_causal,
             )
-            out = torch.matmul(attn, v)
             out = out.transpose(1, 2).contiguous().view(B, T, self.n_heads * self.head_dim)
 
         return self.wo(out)
@@ -403,6 +473,7 @@ class MLAttention(nn.Module):
         mask: Optional[torch.Tensor] = None,
         kv_cache: Optional[dict] = None,
         cache_key: str = "default",
+        is_causal: bool = False,
     ) -> torch.Tensor:
         """
         Args:
@@ -438,10 +509,10 @@ class MLAttention(nn.Module):
         k_rope = apply_rope(k_rope, freqs_cis)  # (B, T, H, rope_dim) ← cached
 
         if kv_cache is not None:
-            if cache_key in kv_cache:
-                c_kv = torch.cat([kv_cache[cache_key]["c_kv"], c_kv], dim=1)
-                k_rope = torch.cat([kv_cache[cache_key]["k_rope"], k_rope], dim=1)
-            kv_cache[cache_key] = {"c_kv": c_kv.detach(), "k_rope": k_rope.detach()}
+            entry = _append_kv_cache(
+                kv_cache, cache_key, {"c_kv": c_kv, "k_rope": k_rope}
+            )
+            c_kv, k_rope = entry["c_kv"], entry["k_rope"]
 
         S = c_kv.shape[1]  # full sequence length including cache
 
@@ -457,16 +528,20 @@ class MLAttention(nn.Module):
         k = k.transpose(1, 2)  # (B, H, S, q_head_dim)
         v = v.transpose(1, 2)  # (B, H, S, v_dim)
 
-        scale = self.q_head_dim**-0.5
-        attn = torch.matmul(q, k.transpose(-2, -1)) * scale
         if mask is not None:
             # When KV cache has past tokens, S > T: pad left with 0 so past
             # tokens are fully visible (they're all in the causal past).
             if S > T:
                 mask = F.pad(mask, (S - T, 0), value=0.0)
-            attn = attn + mask
-        attn = self.attn_drop(F.softmax(attn, dim=-1))
-        out = torch.matmul(attn, v)  # (B, H, T, v_dim)
+        out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=mask,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+            is_causal=is_causal,
+            scale=self.q_head_dim**-0.5,
+        )
         out = out.transpose(1, 2).contiguous().view(B, T, self.n_heads * self.v_dim)
         return self.wo(out)
 
@@ -751,6 +826,7 @@ class TransformerBlock(nn.Module):
         mask: Optional[torch.Tensor] = None,
         kv_cache: Optional[dict] = None,
         cache_key: str = "default",
+        is_causal: bool = False,
     ) -> torch.Tensor:
         """
         Args:
@@ -764,7 +840,14 @@ class TransformerBlock(nn.Module):
             Output tensor of shape (B, T, dim)
         """
         attn_out = self.resid_drop(
-            self.attn(self.attn_norm(x), freqs_cis, mask, kv_cache, cache_key)
+            self.attn(
+                self.attn_norm(x),
+                freqs_cis,
+                mask,
+                kv_cache,
+                cache_key,
+                is_causal,
+            )
         )
         if hasattr(self, "alpha_attn"):
             x = self.alpha_attn * x + self.beta_attn * attn_out
@@ -1059,6 +1142,7 @@ class RecurrentBlock(nn.Module):
         mask: Optional[torch.Tensor] = None,
         n_loops: Optional[int] = None,
         kv_cache: Optional[dict] = None,
+        is_causal: bool = False,
     ) -> torch.Tensor:
         """
         Run the recurrent loop for up to n_loops iterations with ACT early exit.
@@ -1124,11 +1208,13 @@ class RecurrentBlock(nn.Module):
                 # re-execute those mutations on the recomputation pass.
                 _t, _key = t, cache_key
                 def _ckpt_fn(c, t_=_t, k_=_key):
-                    out = self.block(c, freqs_cis, mask, None, k_)
+                    out = self.block(c, freqs_cis, mask, None, k_, is_causal)
                     return out + self.lora(out, t_)
                 trans_out = _grad_ckpt(_ckpt_fn, combined, use_reentrant=False)
             else:
-                trans_out = self.block(combined, freqs_cis, mask, kv_cache, cache_key)
+                trans_out = self.block(
+                    combined, freqs_cis, mask, kv_cache, cache_key, is_causal
+                )
                 trans_out = trans_out + self.lora(trans_out, t)
             h_new = self.injection(h_in, e, trans_out)
 
@@ -1351,6 +1437,7 @@ class BushidoMythos(nn.Module):
         kv_cache: Optional[dict] = None,
         start_pos: int = 0,
         inputs_embeds: Optional[torch.Tensor] = None,
+        logits_to_keep: Optional[int] = None,
     ) -> torch.Tensor:
         """
         Forward pass through Prelude → Recurrent Block → Coda.
@@ -1394,20 +1481,48 @@ class BushidoMythos(nn.Module):
         freqs_cis = (
             self.freqs_cis_mla if self.cfg.attn_type == "mla" else self.freqs_cis
         )[start_pos : start_pos + T]
-        mask = self._causal_mask(T, device, x.dtype) if T > 1 else None
+        # SDPA can construct the standard causal bias internally without an
+        # explicit T x T mask. Chunked cache updates need the padded mask because
+        # their query and key lengths differ; single-token decode needs no mask.
+        is_causal = T > 1 and (kv_cache is None or start_pos == 0)
+        mask = (
+            self._causal_mask(T, device, x.dtype)
+            if T > 1 and kv_cache is not None and start_pos > 0
+            else None
+        )
 
         for i, layer in enumerate(self.prelude):
-            x = layer(x, freqs_cis, mask, kv_cache, cache_key=f"prelude_{i}")
+            x = layer(
+                x,
+                freqs_cis,
+                mask,
+                kv_cache,
+                cache_key=f"prelude_{i}",
+                is_causal=is_causal,
+            )
 
         e = x  # encoded input frozen for injection every loop
-        x = self.recurrent(x, e, freqs_cis, mask, n_loops, kv_cache)
+        x = self.recurrent(
+            x, e, freqs_cis, mask, n_loops, kv_cache, is_causal
+        )
         self._last_aux_loss = self.recurrent._last_ponder_cost * self.cfg.act_aux_loss_weight
 
         for i, layer in enumerate(self.coda):
-            x = layer(x, freqs_cis, mask, kv_cache, cache_key=f"coda_{i}")
+            x = layer(
+                x,
+                freqs_cis,
+                mask,
+                kv_cache,
+                cache_key=f"coda_{i}",
+                is_causal=is_causal,
+            )
 
         hidden = self.norm(x)
         self._last_hidden = hidden
+        if logits_to_keep is not None:
+            if logits_to_keep < 1:
+                raise ValueError("logits_to_keep must be at least 1")
+            hidden = hidden[:, -logits_to_keep:]
         return self.head(hidden)
 
     @torch.no_grad()
@@ -1468,13 +1583,13 @@ class BushidoMythos(nn.Module):
         repetition_penalty: float = 1.0,
         eos_token_id: Optional[int] = None,
     ) -> torch.Tensor:
-        kv_cache: dict = {}
         prompt_len = input_ids.shape[1]
         if prompt_len == 0:
             raise ValueError(
                 f"input_ids is empty (shape {input_ids.shape}). "
                 "The tokenizer returned no tokens for the given prompt."
             )
+        kv_cache: dict = _KVCache(capacity=prompt_len + max_new_tokens)
         # Track which batch rows have emitted eos_token_id so we can stop early.
         finished = torch.zeros(input_ids.shape[0], dtype=torch.bool, device=input_ids.device)
         for step in range(max_new_tokens):
@@ -1485,7 +1600,11 @@ class BushidoMythos(nn.Module):
                 cur_ids = input_ids[:, -1:]
                 start_pos = prompt_len + step - 1
             logits = self.forward(
-                cur_ids, n_loops=n_loops, kv_cache=kv_cache, start_pos=start_pos
+                cur_ids,
+                n_loops=n_loops,
+                kv_cache=kv_cache,
+                start_pos=start_pos,
+                logits_to_keep=1,
             )
             if logits.shape[1] == 0:
                 raise RuntimeError(
@@ -1551,12 +1670,18 @@ class BushidoMythos(nn.Module):
         self.eval()
         try:
             steps = coconut_steps if coconut_steps is not None else self.cfg.coconut_steps
-            kv_cache: dict = {}
+            kv_cache: dict = _KVCache(
+                capacity=input_ids.shape[1] + steps + max_new_tokens
+            )
             prompt_len = input_ids.shape[1]
 
             # Phase 1: process full prompt; KV cache is populated, _last_hidden captured
             last_logits = self.forward(
-                input_ids, n_loops=n_loops, kv_cache=kv_cache, start_pos=0
+                input_ids,
+                n_loops=n_loops,
+                kv_cache=kv_cache,
+                start_pos=0,
+                logits_to_keep=1,
             )
 
             # Phase 2: continuous thought steps — feed last hidden as next input embedding
@@ -1569,6 +1694,7 @@ class BushidoMythos(nn.Module):
                     n_loops=n_loops,
                     kv_cache=kv_cache,
                     start_pos=prompt_len + step,
+                    logits_to_keep=1,
                 )
 
             def _sample(logits_2d: torch.Tensor) -> torch.Tensor:
@@ -1592,6 +1718,7 @@ class BushidoMythos(nn.Module):
                     n_loops=n_loops,
                     kv_cache=kv_cache,
                     start_pos=start_pos,
+                    logits_to_keep=1,
                 )
                 next_tok = _sample(logits[:, -1, :])
                 new_ids = torch.cat([new_ids, next_tok], dim=1)

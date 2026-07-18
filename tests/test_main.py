@@ -14,6 +14,7 @@ from bushido_mythos.main import (
     RecurrentBlock,
     RMSNorm,
     TransformerBlock,
+    _KVCache,
     apply_rope,
     loop_index_embedding,
     precompute_rope_freqs,
@@ -286,6 +287,33 @@ class TestGQAttention:
         self.attn(x, self.freqs, kv_cache=cache, cache_key="layer0")
         assert cache["layer0"]["k"].shape[1] == k_len + T
 
+    def test_kv_cache_reuses_reserved_storage(self):
+        cache = _KVCache(capacity=T + 1)
+        x = torch.randn(B, T, self.cfg.dim)
+        self.attn(x, self.freqs, kv_cache=cache, cache_key="layer0")
+        storage_ptr = cache["layer0"].storage["k"].data_ptr()
+
+        self.attn(x[:, :1], self.freqs[:1], kv_cache=cache, cache_key="layer0")
+
+        assert cache["layer0"].storage["k"].data_ptr() == storage_ptr
+        assert cache["layer0"]["k"].shape[1] == T + 1
+
+    def test_kv_cache_preserves_current_kv_gradients(self):
+        cache = _KVCache(capacity=T + 1)
+        with torch.no_grad():
+            self.attn(
+                torch.randn(B, T, self.cfg.dim),
+                self.freqs,
+                kv_cache=cache,
+                cache_key="layer0",
+            )
+        x = torch.randn(B, 1, self.cfg.dim, requires_grad=True)
+
+        self.attn(x, self.freqs[:1], kv_cache=cache, cache_key="layer0").sum().backward()
+
+        assert self.attn.wk.weight.grad is not None
+        assert self.attn.wv.weight.grad is not None
+
     def test_with_causal_mask(self):
         x = torch.randn(B, T, self.cfg.dim)
         mask = torch.full((1, 1, T, T), float("-inf"))
@@ -328,6 +356,32 @@ class TestMLAttention:
         first_len = cache["mla0"]["c_kv"].shape[1]
         self.attn(x, self.freqs, kv_cache=cache, cache_key="mla0")
         assert cache["mla0"]["c_kv"].shape[1] == first_len + T
+
+    def test_cache_reuses_reserved_storage(self):
+        cache = _KVCache(capacity=T + 1)
+        x = torch.randn(B, T, self.cfg.dim)
+        self.attn(x, self.freqs, kv_cache=cache, cache_key="mla0")
+        storage_ptr = cache["mla0"].storage["c_kv"].data_ptr()
+
+        self.attn(x[:, :1], self.freqs[:1], kv_cache=cache, cache_key="mla0")
+
+        assert cache["mla0"].storage["c_kv"].data_ptr() == storage_ptr
+        assert cache["mla0"]["c_kv"].shape[1] == T + 1
+
+    def test_cache_preserves_current_kv_gradients(self):
+        cache = _KVCache(capacity=T + 1)
+        with torch.no_grad():
+            self.attn(
+                torch.randn(B, T, self.cfg.dim),
+                self.freqs,
+                kv_cache=cache,
+                cache_key="mla0",
+            )
+        x = torch.randn(B, 1, self.cfg.dim, requires_grad=True)
+
+        self.attn(x, self.freqs[:1], kv_cache=cache, cache_key="mla0").sum().backward()
+
+        assert self.attn.kv_down.weight.grad is not None
 
     def test_with_causal_mask(self):
         x = torch.randn(B, T, self.cfg.dim)
@@ -595,6 +649,24 @@ class TestBushidoMythosGQA:
             cache = {}
             logits_cached = self.model(prompt, n_loops=2, kv_cache=cache)[:, -1, :]
         assert torch.allclose(logits_no_cache, logits_cached, atol=1e-4)
+
+    def test_chunked_kv_cache_matches_full_forward(self):
+        prompt = torch.randint(0, self.cfg.vocab_size, (1, T + 2))
+        with torch.no_grad():
+            logits_full = self.model(prompt, n_loops=2)[:, -2:, :]
+            cache = {}
+            self.model(prompt[:, :T], n_loops=2, kv_cache=cache)
+            logits_chunk = self.model(
+                prompt[:, T:], n_loops=2, kv_cache=cache, start_pos=T
+            )
+        assert torch.allclose(logits_full, logits_chunk, atol=1e-4)
+
+    def test_logits_to_keep_matches_full_forward_tail(self):
+        with torch.no_grad():
+            logits_full = self.model(self.ids, n_loops=2)
+            logits_last = self.model(self.ids, n_loops=2, logits_to_keep=1)
+        assert logits_last.shape == (B, 1, self.cfg.vocab_size)
+        assert torch.allclose(logits_full[:, -1:], logits_last, atol=1e-5)
 
     def test_single_token_forward(self):
         # Mask is None when T=1; should not crash
