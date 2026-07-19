@@ -171,10 +171,10 @@ finance 評価(sliding-window、`--seq_len 256 --stride 128 --eval_max_chunks 30
 
 ## 留意点・今後
 
-- **⚠️ `--compile` とは両立しない(現状)**: `apply_act_curriculum` が毎ステップ Python 属性
-  `cfg.act_threshold` を書き換え、forward 内で読むため、`torch.compile` の guard 再評価で
-  再コンパイルが多発する。現状は **`--act_curriculum` 時に compile を自動無効化**し、Colab
-  notebook も `ACT_CURRICULUM=True` のとき `USE_COMPILE=False` にしている。
+- **`--compile` との両立は実装済み**: `act_threshold`とponder weightを非永続の0次元
+  tensor bufferへ移し、in-place更新する。Python float guardを作らないため、Colab notebookは
+  `ACT_CURRICULUM=True`のまま対応GPUで`USE_COMPILE=True`を利用できる。Dynamo compile counter
+  ではbuffer更新による追加compileなしを確認済みで、CUDA wall-clock実測は今後行う。
   **恒久対応**は `act_threshold` / `act_aux_loss_weight` を `persistent=False` の tensor buffer
   にして in-place 更新する形(buffer 読みなら値変更で再コンパイルされず、state_dict にも
   載らないので checkpoint 互換も保てる)。これは model 本体(main.py)の変更になるため別対応。

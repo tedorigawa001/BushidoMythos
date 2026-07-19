@@ -738,8 +738,8 @@ def apply_act_curriculum(model, args: argparse.Namespace,
                          anchor_step: int = 0) -> tuple[float, float]:
     """ACT カリキュラム: 学習進捗に応じて act_threshold / ponder weight を更新。
 
-    モデルは forward 時に毎回 cfg を読むため、共有 cfg オブジェクトを書き換えるだけで
-    次の forward から反映される(モデルコード非改変)。返り値は現在値(ログ用)。
+    BushidoMythos は compile-safe な 0 次元 tensor buffer を更新する。テスト用など
+    setter を持たない軽量モデルでは cfg を直接更新する。返り値は現在値(ログ用)。
 
     進捗は anchor_step(今回の学習が始まった step)から grand_total までの「今回学習する
     区間」で測る。phase1_final から resume して phase2-5 のみ学習する場合でも、その区間で
@@ -756,8 +756,13 @@ def apply_act_curriculum(model, args: argparse.Namespace,
                            args.act_threshold_end, args.act_warmup_frac)
     pon = _curriculum_ramp(progress, args.ponder_weight_start,
                            args.ponder_weight_end, args.act_warmup_frac)
-    model.cfg.act_threshold = thr
-    model.cfg.act_aux_loss_weight = pon
+    target = getattr(model, "_orig_mod", model)
+    setter = getattr(target, "set_act_curriculum_values", None)
+    if setter is not None:
+        setter(thr, pon)
+    else:
+        target.cfg.act_threshold = thr
+        target.cfg.act_aux_loss_weight = pon
     return thr, pon
 
 
@@ -948,6 +953,14 @@ def _cycle_batches(dataset):
             yield b
 
 
+def _timed_dataset_build(label: str, builder, *args, **kwargs):
+    """Build a dataset and report wall time, including cache load/tokenization."""
+    started = time.perf_counter()
+    dataset = builder(*args, **kwargs)
+    print(f"[DATASET] {label}  build={time.perf_counter() - started:.2f}s")
+    return dataset
+
+
 def run_phase(
     phase_name: str,
     dataset,
@@ -979,6 +992,8 @@ def run_phase(
     total_replay = 0  # リプレイで差し替えた micro-batch 数（忘却対策の発火確認用）
     step = start_step
     t0 = time.time()
+    perf_window_start = time.perf_counter()
+    data_wait_seconds = 0.0
 
     # loop curriculum モード解決
     phase_idx = _phase_idx_from_name(phase_name)
@@ -1049,7 +1064,14 @@ def run_phase(
     epoch = 0
     while step < total_steps:
         epoch += 1
-        for batch in dataset:
+        data_iter = iter(dataset)
+        while True:
+            wait_start = time.perf_counter()
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                break
+            data_wait_seconds += time.perf_counter() - wait_start
             if step >= total_steps:
                 break
 
@@ -1138,6 +1160,8 @@ def run_phase(
                 avg_aux  = total_aux  / n
                 ppl = math.exp(min(avg_ce, 20))
                 elapsed = time.time() - t0
+                perf_elapsed = max(time.perf_counter() - perf_window_start, 1e-9)
+                data_wait_pct = 100.0 * data_wait_seconds / perf_elapsed
                 lr_now = scheduler.get_last_lr()[0]
                 loops_str = ""
                 if n_loops_micros > 0:
@@ -1154,6 +1178,7 @@ def run_phase(
                     f"[{phase_name}] step {step:6d}/{total_steps}"
                     f"  loss={avg_loss:.4f}  ce={avg_ce:.4f}  aux={avg_aux:.4f}"
                     f"  ppl={ppl:.1f}  lr={lr_now:.2e}{loops_str}{replay_str}{act_str}  elapsed={elapsed:.0f}s"
+                    f"  data_wait={data_wait_pct:.1f}%"
                 )
                 total_loss = total_ce = total_aux = 0.0
                 total_loops = 0
@@ -1161,6 +1186,8 @@ def run_phase(
                 total_replay = 0
                 log_micros = 0
                 t0 = time.time()
+                perf_window_start = time.perf_counter()
+                data_wait_seconds = 0.0
 
             mem_every = getattr(args, "mem_log_every", 100)
             if mem_every > 0 and step % mem_every == 0:
@@ -1169,6 +1196,7 @@ def run_phase(
                     print(f"[VRAM] step {step:6d}  {vram}")
 
             if step % args.save_every == 0:
+                save_started = time.perf_counter()
                 save_checkpoint(
                     ckpt_dir / f"step_{step:06d}.pt",
                     step, model, optimizer, scheduler, cfg, tag=phase_name,
@@ -1176,14 +1204,23 @@ def run_phase(
                     phase3_steps=phase3_steps, phase4_steps=phase4_steps,
                     phase5_steps=phase5_steps, scaler=scaler,
                 )
+                print(
+                    f"[CHECKPOINT] step {step:6d}  "
+                    f"save={time.perf_counter() - save_started:.2f}s"
+                )
                 rotate_step_checkpoints(ckpt_dir, args.keep_last_n_steps)
 
     final_path = ckpt_dir / phase_final_name
+    save_started = time.perf_counter()
     save_checkpoint(
         final_path, step, model, optimizer, scheduler, cfg, tag=phase_name,
         phase1_steps=phase1_steps, phase2_steps=phase2_steps,
         phase3_steps=phase3_steps, phase4_steps=phase4_steps,
         phase5_steps=phase5_steps, scaler=scaler,
+    )
+    print(
+        f"[CHECKPOINT] phase-final step {step:6d}  "
+        f"save={time.perf_counter() - save_started:.2f}s"
     )
     print(f"\n{phase_name} complete. Checkpoint: {final_path}\n")
     return step, scaler
@@ -1215,6 +1252,12 @@ def train(args: argparse.Namespace) -> None:
     tee = _Tee(log_path)
     print(f"Logging to: {log_path}")
     print(f"Device: {device}  dtype: {amp_dtype}")
+    print(
+        f"Runtime: python={sys.version.split()[0]}  torch={torch.__version__}  "
+        f"cuda={torch.version.cuda or 'none'}"
+    )
+    if device.type == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(device)}")
 
     base_ckpt_path = args.base_ckpt
 
@@ -1286,15 +1329,8 @@ def train(args: argparse.Namespace) -> None:
     if args.act_curriculum:
         validate_act_curriculum_args(args)
 
-    # ── ACT curriculum × torch.compile は両立しない(暫定対応) ──
-    # apply_act_curriculum が毎ステップ Python 属性 cfg.act_threshold を書き換え、
-    # forward 内で読むため、torch.compile の guard 再評価で再コンパイルが多発する。
-    # 当面は compile を自動無効化して安全側に倒す(恒久対応は閾値の tensor buffer 化)。
     if args.act_curriculum and args.compile:
-        print("  [warn] --act_curriculum と --compile は両立しません(閾値変更ごとに再コンパイル)。"
-              "compile を無効化して継続します。高速化が必要なら act_threshold を固定して compile を使うか、"
-              "閾値の tensor buffer 化(恒久対応)を待ってください。")
-        args.compile = False
+        print("  ACT curriculum + torch.compile: compile-safe tensor buffers enabled.")
 
     # ── Phase step totals ─────────────────────────────────────
     p1_total = args.phase1_steps
@@ -1345,7 +1381,10 @@ def train(args: argparse.Namespace) -> None:
     # ── Phase 1: WikiText-103 ─────────────────────────────────
     if args.phase in (0, 1) and step < p1_total:
         print("\n[Phase 1] Building WikiText-103 dataset …")
-        ds1 = build_wikitext103(cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir)
+        ds1 = _timed_dataset_build(
+            "phase1-wikitext103", build_wikitext103,
+            cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+        )
         step, last_scaler = run_phase(
             phase_name="Phase1-WikiText103",
             dataset=ds1,
@@ -1364,14 +1403,17 @@ def train(args: argparse.Namespace) -> None:
     if args.replay_ratio > 0 and replay_ds is None:
         print(f"\n[Replay] Building general-language anchor (WikiText-103) "
               f"({args.replay_ratio*100:.0f}% of Phase 2+ batches) …")
-        replay_ds = build_wikitext103(cfg.vocab_size, args.seq_len, args.batch_size,
-                                      device, args.cache_dir)
+        replay_ds = _timed_dataset_build(
+            "replay-wikitext103", build_wikitext103,
+            cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+        )
 
     # ── Phase 2: Reasoning mix (OpenWebMath + Orca Math [+ Dolly]) ──────────
     if args.phase in (0, 2) and step < p2_total:
         print("\n[Phase 2] Building reasoning mix dataset "
               f"(OpenWebMath + Orca Math{' + Dolly' if args.include_dolly else ''}) …")
-        ds2 = build_reasoning_mix(
+        ds2 = _timed_dataset_build(
+            "phase2-reasoning-mix", build_reasoning_mix,
             cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
             openwebmath_rows=args.phase2_openwebmath_rows,
             orca_ratio=args.phase2_orca_ratio,
@@ -1394,7 +1436,10 @@ def train(args: argparse.Namespace) -> None:
     # ── Phase 3: Finance domain mix (financial-news + finance-alpaca) ───────
     if args.phase in (0, 3) and step < p3_total:
         print("\n[Phase 3] Building finance domain mix dataset (news + alpaca) …")
-        ds3 = build_finance_domain_mix(cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir)
+        ds3 = _timed_dataset_build(
+            "phase3-finance-domain", build_finance_domain_mix,
+            cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+        )
         step, last_scaler = run_phase(
             phase_name="Phase3-FinanceDomain",
             dataset=ds3,
@@ -1411,7 +1456,10 @@ def train(args: argparse.Namespace) -> None:
     # ── Phase 4: Trading methodology SFT (forecaster + sentiment) ─
     if args.phase in (0, 4) and step < p4_total:
         print("\n[Phase 4] Building trading methodology dataset (forecaster + sentiment) …")
-        ds4 = build_trading_methodology_sft(cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir)
+        ds4 = _timed_dataset_build(
+            "phase4-trading-methodology", build_trading_methodology_sft,
+            cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+        )
         step, last_scaler = run_phase(
             phase_name="Phase4-TradingMethodology",
             dataset=ds4,
@@ -1428,7 +1476,10 @@ def train(args: argparse.Namespace) -> None:
     # ── Phase 5: Trading discipline / risk-management QA ─────────
     if args.phase in (0, 5) and step < p5_total:
         print("\n[Phase 5] Building trading risk-management QA dataset …")
-        ds5 = build_trading_qa(cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir)
+        ds5 = _timed_dataset_build(
+            "phase5-trading-qa", build_trading_qa,
+            cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+        )
         step, last_scaler = run_phase(
             phase_name="Phase5-TradingQA",
             dataset=ds5,

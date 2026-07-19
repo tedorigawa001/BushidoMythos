@@ -797,6 +797,50 @@ class TestApplyACTCurriculum:
         assert m.cfg.act_threshold == pytest.approx(0.5)
         assert m.cfg.act_aux_loss_weight == pytest.approx(0.02)
 
+    def test_updates_real_model_tensor_buffers(self):
+        model = BushidoMythos(tiny_cfg())
+
+        apply_act_curriculum(model, _curriculum_args(), step=0, grand_total=1000)
+
+        assert model.recurrent._act_threshold.item() == pytest.approx(0.5)
+        assert model._act_aux_loss_weight.item() == pytest.approx(0.02)
+
+    @pytest.mark.skipif(
+        not torch._dynamo.is_dynamo_supported(),
+        reason="torch.compile (Dynamo) がこの Python/torch では未対応",
+    )
+    def test_updates_compiled_model_wrapper(self):
+        model = BushidoMythos(tiny_cfg())
+        compiled = torch.compile(model, backend="eager")
+
+        apply_act_curriculum(compiled, _curriculum_args(), step=0, grand_total=1000)
+
+        assert model.recurrent._act_threshold.item() == pytest.approx(0.5)
+        assert model._act_aux_loss_weight.item() == pytest.approx(0.02)
+
+    @pytest.mark.skipif(
+        not torch._dynamo.is_dynamo_supported(),
+        reason="torch.compile (Dynamo) がこの Python/torch では未対応",
+    )
+    def test_buffer_updates_do_not_trigger_recompile(self):
+        from torch._dynamo.testing import CompileCounter
+
+        model = BushidoMythos(tiny_cfg()).eval()
+        counter = CompileCounter()
+        compiled = torch.compile(model, backend=counter)
+        ids = torch.randint(0, model.cfg.vocab_size, (1, 4))
+
+        model.set_act_curriculum_values(0.5, 0.02)
+        compiled(ids, n_loops=1)
+        initial_frames = counter.frame_count
+        first_aux = model._last_aux_loss.item()
+
+        model.set_act_curriculum_values(0.75, 0.01)
+        compiled(ids, n_loops=1)
+
+        assert counter.frame_count == initial_frames
+        assert model._last_aux_loss.item() != pytest.approx(first_aux)
+
     def test_threshold_increases_monotonically(self):
         m = _FakeModel(_FakeCfg())
         args = _curriculum_args()

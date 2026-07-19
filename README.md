@@ -103,6 +103,32 @@ python training/finance_pretrain.py --grad_checkpoint ...
 
 Enable in the Colab notebook by setting `USE_GRAD_CHECKPOINT = True` in the GPU-settings cell.
 
+#### Memory-efficient attention and decoding
+
+Both GQA and MLA use PyTorch scaled dot-product attention (SDPA) as the standard
+fallback. On supported CUDA builds, PyTorch selects a fused attention backend;
+otherwise it uses its compatible math implementation. The model also passes the
+causal condition directly to SDPA during training and prompt prefill, avoiding a
+separate `T x T` additive mask in the common path.
+
+Autoregressive generation uses a capacity-aware KV cache sized for the prompt and
+requested output. New tokens are written into reserved storage instead of rebuilding
+every layer's cache with `torch.cat()` at each decode step. The generation path also
+projects only the final hidden position through the vocabulary head. Regular
+`forward()` calls still return logits for every input position by default; callers
+that only need a suffix can pass `logits_to_keep=N`.
+
+All K/V tensors written into the cache — including those from the current forward —
+are stored detached, so a forward pass that uses a KV cache does not propagate
+gradients through the cached attention keys and values. (The previous `torch.cat()`
+implementation kept the current step's gradient path.) This is irrelevant for the
+standard training pipeline, which runs with `kv_cache=None`; it only matters for
+hypothetical cache-enabled training setups.
+
+These optimizations do not change model weights or sampling behavior. Their impact is
+largest for long contexts and long generated outputs. Benchmark on the deployment GPU,
+because the selected SDPA backend depends on the installed PyTorch and CUDA versions.
+
 #### Standalone inference script (`chat.py`)
 
 A new top-level script [`chat.py`](chat.py) provides an interactive REPL for trained checkpoints. Key capabilities:
@@ -144,6 +170,8 @@ The `--grad_checkpoint` value always overrides whatever was stored in the checkp
 | Addition | Description |
 |---|---|
 | `USE_GRAD_CHECKPOINT = False` | Toggle in the GPU-settings cell; set to `True` when OOM |
+| SDPA capability check | Prints whether the installed PyTorch exposes scaled dot-product attention; no extra flag is required |
+| Memory-efficient inference note | Documents reserved KV cache storage and final-position-only vocabulary projection used by `model.generate()` |
 | Auto-creation of base checkpoint | `run-both` and `run-phase1` cells call `make_base_ckpt.py` automatically if the starting checkpoint is missing (e.g., after a Drive disconnect) |
 | Phase pre-checks | Phase 2–5 cells verify that the previous phase's `*_final.pt` exists before starting, and raise a clear `FileNotFoundError` with remediation instructions if it is missing |
 
@@ -397,7 +425,7 @@ python training/finance_pretrain.py \
 | `--loop_tail_p` | `0.2` | `curriculum`: probability of sampling the tail (`hi+1..loop_tail_max`) |
 | `--loop_seed` | `0` | `curriculum`: sampler seed; deterministic per `(seed, step)` so it is resume-safe |
 | `--replay_ratio` | `0.0` | Memory replay (anti-forgetting, experimental): in Phase 2+, replace this fraction of batches with a general-language (WikiText-103) anchor. Replay *replaces* (not adds) batches, so effective domain steps shrink — raise total steps to compensate. Pilot: 20% replay cut catastrophic forgetting ~89% while finance held-out PPL improved; sweet spot 5–10% (see `training/exp_replay_pilot.py`) |
-| `--act_curriculum` | `False` | Ramp `act_threshold`/`act_aux_loss_weight` (ponder cost) from shallow to deep over training instead of holding them fixed (experimental, see below). Incompatible with `--compile` — automatically disables compile with a warning when both are set |
+| `--act_curriculum` | `False` | Ramp `act_threshold`/`act_aux_loss_weight` (ponder cost) from shallow to deep over training instead of holding them fixed (experimental, see below). Compatible with `--compile` through compile-safe scalar tensor buffers |
 | `--act_threshold_start` | `0.5` | `act_curriculum`: starting ACT threshold (must be in `(0, 1]`) |
 | `--act_threshold_end` | `-1.0` | `act_curriculum`: ending ACT threshold; `-1` resolves to the model's `cfg.act_threshold` |
 | `--act_warmup_frac` | `0.5` | `act_curriculum`: fraction of the run (relative to `--act_anchor_step`) over which the ramp completes; must be in `[0, 1]` |
@@ -434,7 +462,19 @@ Holding `act_threshold` fixed for the whole run lets the model halt deep recurre
 
 Progress is measured from `--act_anchor_step`, not from absolute step 0 — this matters because each phase is normally launched as a separate process (a Colab cell) that resumes from a checkpoint, so the anchor must be a fixed value shared across all phase cells (e.g. `0` for a full run) to get one continuous ramp instead of the curriculum restarting every phase. `--act_threshold_end -1` (default) resolves to the model's own `cfg.act_threshold`.
 
-`--act_curriculum` cannot run with `--compile`: the curriculum mutates `act_threshold`/`act_aux_loss_weight` as plain Python floats every step, which `torch.compile`'s guards treat as a recompile trigger. When both flags are set, compile is force-disabled with a warning rather than thrashing on recompilation. Design rationale, the anchor-step bug history, and measured results are in [`training/report/act_curriculum_design.md`](training/report/act_curriculum_design.md).
+`--act_curriculum` can run with `--compile`. Dynamic `act_threshold` and ponder weight values are stored in non-persistent scalar tensor buffers and updated in place, so changing curriculum values does not create Python-float guards or alter the checkpoint schema. The training log also reports `data_wait`, dataset build time, runtime versions, and checkpoint save time for end-to-end bottleneck analysis. Design rationale, the anchor-step bug history, and measured results are in [`training/report/act_curriculum_design.md`](training/report/act_curriculum_design.md).
+
+Compare eager and compiled ACT training steps on a T4 before spending A100 time:
+
+```bash
+python3 training/bench_act_compile.py \
+  --ckpt checkpoints/finance_a100_v2/phase1_final.pt \
+  --device cuda --dtype auto --steps 20 --warmup 3 \
+  --batch_size 1 --seq_len 256 --n_loops 8 --grad_checkpoint \
+  --json_out checkpoints/finance_a100_v2/bench_act_compile.json
+```
+
+The measured window excludes warmup/initial compilation. The report includes runtime versions, eager/compile throughput, peak VRAM, Dynamo unique graphs and graph breaks, plus the maximum loss delta.
 
 **VRAM diagnostics (`--mem_log_every`):**
 
@@ -700,6 +740,7 @@ python3.9 chat.py --mixed_int8 --allow_unsafe_checkpoint --ckpt checkpoints/phas
 |---|---|
 | [`docs/bushido_mythos.md`](docs/bushido_mythos.md) | Full API reference for `BushidoMythos`, including constructor, `forward`, `generate`, submodules, config reference, and examples |
 | [`docs/datasets.md`](docs/datasets.md) | Dataset plan for general pretraining and financial-trading specialization |
+| [`docs/performance_roadmap.md`](docs/performance_roadmap.md) | Prioritized roadmap for the remaining memory-efficiency and performance work |
 
 ---
 
@@ -751,10 +792,10 @@ Attention layers are selected with `cfg.attn_type`:
 
 | Option | Class | Description |
 |---|---|---|
-| `"gqa"` | `GQAttention` | Grouped Query Attention (Ainslie et al., 2023). It uses fewer KV heads than Q heads (`n_kv_heads < n_heads`) and reduces KV cache memory by `n_heads / n_kv_heads`. If `flash-attn>=2.8.3` is installed, it uses **Flash Attention 2** with native GQA support and fallback behavior. |
-| `"mla"` | `MLAttention` | Multi-Latent Attention (DeepSeek-V2). It caches compressed KV latents (`kv_lora_rank`) instead of full K/V tensors, and separates RoPE and non-RoPE head dimensions for position-aware compression. |
+| `"gqa"` | `GQAttention` | Grouped Query Attention (Ainslie et al., 2023). It uses fewer KV heads than Q heads (`n_kv_heads < n_heads`) and reduces KV cache memory by `n_heads / n_kv_heads`. If `flash-attn>=2.8.3` is installed, it uses **Flash Attention 2** with native GQA support; otherwise it falls back to PyTorch SDPA. |
+| `"mla"` | `MLAttention` | Multi-Latent Attention (DeepSeek-V2). It caches compressed KV latents (`kv_lora_rank`) instead of full K/V tensors, separates RoPE and non-RoPE head dimensions, and computes attention through PyTorch SDPA. |
 
-RoPE is applied to Q and K before caching, so cached states do not need to be re-rotated when retrieved.
+RoPE is applied to Q and K before caching, so cached states do not need to be re-rotated when retrieved. During generation, cache storage is reserved once and reused across decode steps.
 
 ---
 

@@ -1127,6 +1127,11 @@ class RecurrentBlock(nn.Module):
         self.act = ACTHalting(cfg.dim)
         self.lora = LoRAAdapter(cfg.dim, cfg.lora_rank, cfg.max_loop_iters)
         self.norm = RMSNorm(cfg.dim)
+        self.register_buffer(
+            "_act_threshold",
+            torch.tensor(float(cfg.act_threshold)),
+            persistent=False,
+        )
         self.loop_dim = (
             cfg.dim // 8
         )  # fraction of channels receiving loop-index embedding
@@ -1250,7 +1255,7 @@ class RecurrentBlock(nn.Module):
             # threshold<1 leaves a non-zero remainder that leaks every step.
             remainder = (1.0 - cumulative_p).clamp(min=0)
             weight = torch.where(
-                cumulative_p + p >= self.cfg.act_threshold,
+                cumulative_p + p >= self._act_threshold,
                 remainder,
                 p,
             )
@@ -1261,7 +1266,7 @@ class RecurrentBlock(nn.Module):
 
             # Capture combined_new for positions halting THIS step, before
             # updating halted, so future loops use their halt-step K/V representation.
-            newly_halting = still_running & (cumulative_p >= self.cfg.act_threshold)
+            newly_halting = still_running & (cumulative_p >= self._act_threshold)
             if newly_halting.any():
                 if combined_frozen is None:
                     combined_frozen = combined_new.detach().clone()
@@ -1364,6 +1369,11 @@ class BushidoMythos(nn.Module):
         self.head.weight = self.embed.weight  # weight tying
 
         self._init_weights()
+        self.register_buffer(
+            "_act_aux_loss_weight",
+            torch.tensor(float(cfg.act_aux_loss_weight)),
+            persistent=False,
+        )
         self._last_hidden: Optional[torch.Tensor] = None
         self._last_aux_loss: torch.Tensor = torch.tensor(0.0)
 
@@ -1374,6 +1384,14 @@ class BushidoMythos(nn.Module):
                 nn.init.normal_(m.weight, std=0.02)
             elif isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, std=0.02)
+
+    @torch.no_grad()
+    def set_act_curriculum_values(self, threshold: float, ponder_weight: float) -> None:
+        """Update compile-safe ACT scalars while keeping cfg values in sync."""
+        self.recurrent._act_threshold.fill_(threshold)
+        self._act_aux_loss_weight.fill_(ponder_weight)
+        self.cfg.act_threshold = float(threshold)
+        self.cfg.act_aux_loss_weight = float(ponder_weight)
 
     @torch.no_grad()
     def update_moe_router_bias(
@@ -1505,7 +1523,9 @@ class BushidoMythos(nn.Module):
         x = self.recurrent(
             x, e, freqs_cis, mask, n_loops, kv_cache, is_causal
         )
-        self._last_aux_loss = self.recurrent._last_ponder_cost * self.cfg.act_aux_loss_weight
+        self._last_aux_loss = (
+            self.recurrent._last_ponder_cost * self._act_aux_loss_weight
+        )
 
         for i, layer in enumerate(self.coda):
             x = layer(

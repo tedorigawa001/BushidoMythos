@@ -1345,6 +1345,20 @@ class TestACTInvariants:
         assert (m_high.recurrent._last_ponder_cost.item()
                 >= m_low.recurrent._last_ponder_cost.item())
 
+    def test_curriculum_values_update_tensor_buffers_and_cfg(self):
+        self.model.set_act_curriculum_values(0.75, 0.005)
+
+        assert self.model.recurrent._act_threshold.item() == pytest.approx(0.75)
+        assert self.model._act_aux_loss_weight.item() == pytest.approx(0.005)
+        assert self.model.cfg.act_threshold == pytest.approx(0.75)
+        assert self.model.cfg.act_aux_loss_weight == pytest.approx(0.005)
+
+    def test_act_curriculum_buffers_do_not_change_checkpoint_schema(self):
+        state_keys = self.model.state_dict().keys()
+
+        assert "recurrent._act_threshold" not in state_keys
+        assert "_act_aux_loss_weight" not in state_keys
+
 
 # ---------------------------------------------------------------------------
 # start_pos RoPE offset correctness
