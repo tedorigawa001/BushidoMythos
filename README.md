@@ -419,6 +419,7 @@ python training/finance_pretrain.py \
 | `--compile` | `False` | Uses `torch.compile()` on Ampere+; measured steady-state gain is about 7.5% for A100/batch 16/seq 256/8 loops with gradient checkpointing. Unsupported environments are skipped automatically |
 | `--grad_checkpoint` | `False` | Enable gradient checkpointing in the recurrent loop. Reduces activation memory in proportion to loop depth (larger effect with more loops) at the cost of ~30-40% extra compute |
 | `--ce_chunk_size` | `0` | Checkpoint tied LM-head cross entropy in token chunks, avoiding retention of full `(B,T,vocab)` logits. `0` disables it; benchmark `1024` first because backward recomputes the LM head |
+| `--grouped_moe` | `False` | Require native BF16 grouped GEMM for routed experts on CUDA SM80+ with PyTorch 2.11+. Prints active status/reason and exits if requested but unavailable; omission retains the legacy expert loop |
 | `--optim8bit` | `False` | Use bitsandbytes 8-bit AdamW (optimizer states 8→2 bytes/param, near-lossless). Requires CUDA + `pip install bitsandbytes`; falls back to standard AdamW if unavailable. Resume must use the same setting (a mismatch resets optimizer state with a warning) |
 | `--mem_log_every` | `100` | Log VRAM stats (`alloc` / `reserved` / `peak` / `frag`) every N steps. Helps diagnose OOM root cause. `0` = disable |
 | `--loop_schedule` | `off` | Recurrent-depth control (experimental). `off` = model default / `fixed` = pin `n_loops` to `max_loop_iters` (clean baseline) / `curriculum` = phase-based variable recurrence (see below) |
@@ -493,6 +494,21 @@ python3 training/bench_act_compile.py \
 This path returns normalized hidden states from the model and activation-checkpoints each tied LM-head/CE chunk. It reduces the retained logits from `B*T*vocab_size` to at most `ce_chunk_size*vocab_size`, at the cost of recomputing the LM-head projection during backward. The regular `forward()` API still returns full logits, and `ce_chunk_size=0` preserves the previous training behavior.
 
 The first A100 result for `ce_chunk_size=1024` produced 33,561 compiled tokens/sec and 1,353 MiB peak allocation, with zero graphs/breaks created during measurement and the same `0.00154114` eager/compile loss delta as the baseline. Against the matching full-logits compiled run (37,564 tokens/sec, 3,137 MiB), this is a **10.7% throughput reduction** for a **1,784 MiB / 56.9% peak-memory reduction**. Keep `ce_chunk_size=0` when the workload fits; use chunking as an OOM fallback or when the saved memory enables a larger microbatch that recovers end-to-end throughput.
+
+Native grouped MoE can be measured against the same full-logits baseline with:
+
+```bash
+python3 training/bench_act_compile.py \
+  --ckpt checkpoints/finance_a100_v2/phase1_final.pt \
+  --device cuda --dtype bfloat16 --steps 100 --warmup 100 \
+  --batch_size 16 --seq_len 256 --n_loops 8 --grad_checkpoint \
+  --grouped_moe \
+  --json_out checkpoints/finance_a100_v2/bench_act_compile_grouped_moe.json
+```
+
+The implementation keeps existing expert parameters and state-dict keys, stacks them only for the grouped operation, and supplies a custom backward using grouped GEMMs for input and weight gradients. It uses the [PyTorch native grouped_mm API](https://docs.pytorch.org/docs/main/generated/torch.nn.functional.grouped_mm.html), which currently requires BF16 CUDA tensors on SM80 or newer. When `--grouped_moe` is specified, both benchmark and training print exactly one status line such as `[grouped_moe] requested=true active=true reason=active`; an inactive request exits immediately instead of silently measuring the legacy path. Before timing, the benchmark also checks native forward, input gradient, and weight gradient against non-square `F.linear` references. Each result records `grouped_moe_active`, and `config.grouped_moe_probe` records the maximum absolute deltas.
+
+On A100 with batch 16, sequence 256, 8 loops, gradient checkpointing, and full-logits CE, the validated grouped run reached 75,903 compiled tokens/sec versus 37,564 for the matching legacy run: **2.021x throughput** and **50.5% less measured step time**. Compiled peak allocation increased by only 10 MiB (3,137 to 3,147 MiB). The numerical probe reported zero delta for output and both gradients; grouped versus legacy first-loss differences were 0.000130 eager and 0.000229 compiled. No graphs or breaks were created during measurement. Grouped MoE is therefore the preferred A100/PyTorch 2.11 training path when its runtime preflight succeeds.
 
 **VRAM diagnostics (`--mem_log_every`):**
 

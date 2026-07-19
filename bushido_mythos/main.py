@@ -246,7 +246,6 @@ class MythosConfig:
     # Reduces VRAM usage proportionally to n_loops (~7x for 8 loops) at the cost of ~30-40%
     # extra compute. Only active during training when kv_cache is None.
     use_gradient_checkpointing: bool = False
-
     def __post_init__(self) -> None:
         if self.attn_type not in ("gqa", "mla"):
             raise ValueError(f"attn_type must be 'gqa' or 'mla', got {self.attn_type!r}")
@@ -636,6 +635,64 @@ class MLAttention(nn.Module):
 # ---------------------------------------------------------------------------
 
 
+_NATIVE_GROUPED_MM = getattr(F, "grouped_mm", None)
+
+
+def grouped_moe_runtime_status(
+    device: torch.device, compute_dtype: torch.dtype
+) -> tuple[bool, str]:
+    """Return native grouped MoE availability and a stable diagnostic reason."""
+    if _NATIVE_GROUPED_MM is None:
+        return False, "api_unavailable"
+    if device.type != "cuda":
+        return False, "device_not_cuda"
+    if compute_dtype != torch.bfloat16:
+        return False, "dtype_not_bfloat16"
+    if not torch.cuda.is_available():
+        return False, "cuda_unavailable"
+    if torch.cuda.get_device_capability(device)[0] < 8:
+        return False, "compute_capability_lt_80"
+    return True, "active"
+
+
+def _native_grouped_linear(
+    x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor
+) -> torch.Tensor:
+    """Grouped equivalent of F.linear(x_group, weight[group]) without bias."""
+    if _NATIVE_GROUPED_MM is None:
+        raise RuntimeError("torch.nn.functional.grouped_mm is unavailable")
+    # grouped_mm consumes [group, in_features, out_features], whereas nn.Linear
+    # stores weights as [out_features, in_features].
+    return _NATIVE_GROUPED_MM(
+        x, weight.transpose(-2, -1).contiguous(), offs=offsets
+    )
+
+
+class _GroupedLinear(torch.autograd.Function):
+    """Differentiable wrapper around the non-differentiable grouped_mm primitive."""
+
+    @staticmethod
+    def forward(ctx, x, weight, offsets):
+        ctx.save_for_backward(x, weight, offsets)
+        return _native_grouped_linear(x, weight, offsets)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, weight, offsets = ctx.saved_tensors
+        grad_output = grad_output.contiguous()
+        grad_x = _native_grouped_linear(
+            grad_output, weight.transpose(-2, -1).contiguous(), offsets
+        )
+        # In 2D x 2D mode grouped_mm partitions the contracting dimension by
+        # offsets and returns one [out_features, in_features] gradient per group.
+        grad_weight = _NATIVE_GROUPED_MM(
+            grad_output.transpose(0, 1).contiguous(),
+            x,
+            offs=offsets,
+        )
+        return grad_x, grad_weight, None
+
+
 class Expert(nn.Module):
     """
     Single SwiGLU feed-forward expert.
@@ -692,6 +749,7 @@ class MoEFFN(nn.Module):
         self.n_experts = cfg.n_experts
         self.n_shared = cfg.n_shared_experts
         self.topk = cfg.n_experts_per_tok
+        self.use_grouped_moe = False
 
         self.router = nn.Linear(cfg.dim, cfg.n_experts, bias=False)
         # load-balancing bias adjusted externally during training; not a gradient param
@@ -709,8 +767,57 @@ class MoEFFN(nn.Module):
         self._last_expert_counts: Optional[torch.Tensor] = None
         self._accum_expert_counts: Optional[torch.Tensor] = None
 
-    @torch._dynamo.disable
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _forward_routed_loop(
+        self,
+        flat: torch.Tensor,
+        tok_rows_sorted: torch.Tensor,
+        scores_sorted: torch.Tensor,
+        counts_int: torch.Tensor,
+    ) -> torch.Tensor:
+        """Checkpoint-compatible fallback for runtimes without grouped_mm."""
+        counts_cpu = counts_int.tolist()
+        out = torch.zeros_like(flat)
+        offset = 0
+        for eid, cnt in enumerate(counts_cpu):
+            if cnt > 0:
+                tok_rows_e = tok_rows_sorted[offset : offset + cnt]
+                scores_e = scores_sorted[offset : offset + cnt].unsqueeze(-1)
+                expert_out = scores_e * self.routed_experts[eid](flat[tok_rows_e])
+                out = out.index_add(0, tok_rows_e, expert_out)
+            offset += cnt
+        return out
+
+    def _forward_routed_grouped(
+        self,
+        flat: torch.Tensor,
+        tok_rows_sorted: torch.Tensor,
+        scores_sorted: torch.Tensor,
+        counts_int: torch.Tensor,
+    ) -> torch.Tensor:
+        routed = flat[tok_rows_sorted].to(dtype=torch.bfloat16)
+        offsets = counts_int.cumsum(0).to(dtype=torch.int32)
+
+        gate_weight = torch.stack(
+            [expert.gate.weight for expert in self.routed_experts]
+        ).to(dtype=torch.bfloat16)
+        up_weight = torch.stack(
+            [expert.up.weight for expert in self.routed_experts]
+        ).to(dtype=torch.bfloat16)
+        down_weight = torch.stack(
+            [expert.down.weight for expert in self.routed_experts]
+        ).to(dtype=torch.bfloat16)
+
+        gate = _GroupedLinear.apply(routed, gate_weight, offsets)
+        up = _GroupedLinear.apply(routed, up_weight, offsets)
+        activated = F.silu(gate) * up
+        routed_out = _GroupedLinear.apply(activated, down_weight, offsets)
+        routed_out = routed_out * scores_sorted.unsqueeze(-1)
+        routed_out = routed_out.to(dtype=flat.dtype)
+
+        out = torch.zeros_like(flat)
+        return out.index_add(0, tok_rows_sorted, routed_out)
+
+    def _forward_impl(self, x: torch.Tensor, grouped: bool) -> torch.Tensor:
         """
         Args:
             x -- input of shape (B, T, dim)
@@ -743,9 +850,8 @@ class MoEFFN(nn.Module):
             self._accum_expert_counts = self._accum_expert_counts + counts
 
         # Sort all (token, k-slot) pairs by expert index with a single argsort kernel.
-        # CPU-side slice offsets come from one tolist() call, so the dispatch loop
-        # issues no additional GPU→CPU syncs. index_add is out-of-place so autograd
-        # builds a correct grad_fn chain through each expert's parameters.
+        # Grouped mode keeps dispatch boundaries on-device. The fallback performs
+        # one counts transfer and preserves compatibility with older runtimes.
         N = flat.shape[0]
         tok_rows_all = torch.arange(N, device=flat.device).unsqueeze(1).expand_as(topk_idx).reshape(-1)
         eid_all = topk_idx.reshape(-1)
@@ -755,23 +861,29 @@ class MoEFFN(nn.Module):
         tok_rows_sorted = tok_rows_all[sort_order]
         scores_sorted = scores_all[sort_order]
 
-        counts_cpu = counts_int.tolist()               # one GPU→CPU transfer for all experts
-
-        out = torch.zeros_like(flat)
-        offset = 0
-        for eid, cnt in enumerate(counts_cpu):
-            if cnt > 0:
-                tok_rows_e = tok_rows_sorted[offset : offset + cnt]
-                scores_e = scores_sorted[offset : offset + cnt].unsqueeze(-1)
-                expert_out = scores_e * self.routed_experts[eid](flat[tok_rows_e])
-                out = out.index_add(0, tok_rows_e, expert_out)
-            offset += cnt
+        if grouped:
+            out = self._forward_routed_grouped(
+                flat, tok_rows_sorted, scores_sorted, counts_int
+            )
+        else:
+            out = self._forward_routed_loop(
+                flat, tok_rows_sorted, scores_sorted, counts_int
+            )
 
         # shared experts always fire for every token
         for shared in self.shared_experts:
             out = out + shared(flat)
 
         return out.reshape(B, T, D)
+
+    @torch._dynamo.disable
+    def _forward_legacy(self, x: torch.Tensor) -> torch.Tensor:
+        return self._forward_impl(x, grouped=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.use_grouped_moe:
+            return self._forward_impl(x, grouped=True)
+        return self._forward_legacy(x)
 
 
 # ---------------------------------------------------------------------------
@@ -1477,6 +1589,21 @@ class BushidoMythos(nn.Module):
         self._act_aux_loss_weight.fill_(ponder_weight)
         self.cfg.act_threshold = float(threshold)
         self.cfg.act_aux_loss_weight = float(ponder_weight)
+
+    def set_grouped_moe(
+        self, enabled: bool, compute_dtype: Optional[torch.dtype] = None
+    ) -> bool:
+        """Select native grouped GEMM without changing config or checkpoint schema."""
+        active = False
+        for module in self.modules():
+            if isinstance(module, MoEFFN):
+                runtime_dtype = compute_dtype or module.router.weight.dtype
+                supported, _ = grouped_moe_runtime_status(
+                    module.router.weight.device, runtime_dtype
+                )
+                module.use_grouped_moe = bool(enabled and supported)
+                active = active or module.use_grouped_moe
+        return active
 
     @torch.no_grad()
     def update_moe_router_bias(

@@ -30,7 +30,9 @@ from bushido_mythos import (
     BushidoMythos,
     MythosConfig,
     chunked_linear_cross_entropy,
+    grouped_moe_runtime_status,
 )
+from bushido_mythos.main import _GroupedLinear
 from training.eval_perplexity import load_model
 
 
@@ -48,6 +50,7 @@ class BenchResult:
     measured_graph_breaks: int
     unique_graphs: int
     graph_breaks: int
+    grouped_moe_active: bool
 
 
 def _tiny_cfg() -> MythosConfig:
@@ -120,6 +123,71 @@ def _dynamo_counts() -> Tuple[int, int]:
     unique_graphs = int(counters.get("stats", {}).get("unique_graphs", 0))
     graph_breaks = sum(int(v) for v in counters.get("graph_break", {}).values())
     return unique_graphs, graph_breaks
+
+
+def _validate_grouped_linear(device: torch.device) -> dict:
+    """Compare native grouped_mm forward/backward with non-square F.linear."""
+    generator = torch.Generator(device=device).manual_seed(1729)
+    counts = torch.tensor([3, 0, 5], device=device, dtype=torch.int32)
+    offsets = counts.cumsum(0).to(dtype=torch.int32)
+    x = torch.randn(
+        8,
+        16,
+        device=device,
+        dtype=torch.bfloat16,
+        generator=generator,
+        requires_grad=True,
+    )
+    weight = torch.randn(
+        3,
+        24,
+        16,
+        device=device,
+        dtype=torch.bfloat16,
+        generator=generator,
+        requires_grad=True,
+    )
+    x_ref = x.detach().clone().requires_grad_(True)
+    weight_ref = weight.detach().clone().requires_grad_(True)
+
+    output = _GroupedLinear.apply(x, weight, offsets)
+    boundaries = [0] + offsets.tolist()
+    reference = torch.cat(
+        [
+            F.linear(
+                x_ref[boundaries[group] : boundaries[group + 1]],
+                weight_ref[group],
+            )
+            for group in range(weight.shape[0])
+        ],
+        dim=0,
+    )
+    grad_output = torch.randn(
+        output.shape, device=device, dtype=output.dtype, generator=generator
+    )
+    grads = torch.autograd.grad(output, (x, weight), grad_output)
+    ref_grads = torch.autograd.grad(reference, (x_ref, weight_ref), grad_output)
+
+    metrics = {
+        "output_max_abs_delta": float(
+            (output - reference).detach().abs().max()
+        ),
+        "input_grad_max_abs_delta": float(
+            (grads[0] - ref_grads[0]).detach().abs().max()
+        ),
+        "weight_grad_max_abs_delta": float(
+            (grads[1] - ref_grads[1]).detach().abs().max()
+        ),
+    }
+    try:
+        torch.testing.assert_close(output, reference, atol=0.05, rtol=0.03)
+        torch.testing.assert_close(grads[0], ref_grads[0], atol=0.05, rtol=0.03)
+        torch.testing.assert_close(grads[1], ref_grads[1], atol=0.05, rtol=0.03)
+    except AssertionError as error:
+        raise RuntimeError(
+            "native grouped MoE numerical probe failed: " + str(metrics)
+        ) from error
+    return metrics
 
 
 def _benchmark_mode(
@@ -210,6 +278,11 @@ def _benchmark_mode(
         measured_graph_breaks=measured_breaks,
         unique_graphs=unique_graphs,
         graph_breaks=graph_breaks,
+        grouped_moe_active=any(
+            module.use_grouped_moe
+            for module in target.modules()
+            if hasattr(module, "use_grouped_moe")
+        ),
     )
 
 
@@ -261,6 +334,11 @@ def main() -> None:
         default=0,
         help="Checkpoint tied LM-head CE in token chunks; 0 uses full logits",
     )
+    parser.add_argument(
+        "--grouped_moe",
+        action="store_true",
+        help="Use native BF16 grouped GEMM for routed experts when available",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--json_out")
     parser.add_argument("--allow_unsafe_checkpoint", action="store_true")
@@ -282,6 +360,68 @@ def main() -> None:
         requested_device = torch.device("cpu")
     device = requested_device
     amp_dtype = _resolve_dtype(device, args.dtype)
+
+    grouped_moe_active, grouped_moe_reason = grouped_moe_runtime_status(
+        device, amp_dtype
+    )
+    if args.grouped_moe:
+        print(
+            "[grouped_moe] requested=true "
+            f"active={str(grouped_moe_active).lower()} reason={grouped_moe_reason}"
+        )
+        if not grouped_moe_active:
+            if args.json_out:
+                Path(args.json_out).write_text(
+                    json.dumps(
+                        {
+                            "runtime": _runtime_info(device, amp_dtype),
+                            "config": {
+                                "grouped_moe": True,
+                                "grouped_moe_reason": grouped_moe_reason,
+                            },
+                            "results": [],
+                            "grouped_moe_request_valid": False,
+                            "steady_state_valid": False,
+                            "error": "grouped_moe_inactive",
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            raise RuntimeError(
+                "--grouped_moe requested but inactive: " + grouped_moe_reason
+            )
+
+    grouped_moe_probe = None
+    if args.grouped_moe:
+        try:
+            grouped_moe_probe = _validate_grouped_linear(device)
+        except RuntimeError as error:
+            if args.json_out:
+                Path(args.json_out).write_text(
+                    json.dumps(
+                        {
+                            "runtime": _runtime_info(device, amp_dtype),
+                            "config": {
+                                "grouped_moe": True,
+                                "grouped_moe_reason": grouped_moe_reason,
+                                "grouped_moe_probe": None,
+                            },
+                            "results": [],
+                            "grouped_moe_request_valid": False,
+                            "steady_state_valid": False,
+                            "error": "grouped_moe_probe_failed",
+                            "error_detail": str(error),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            raise
 
     model0, cfg = _load_benchmark_model(
         None if args.tiny else args.ckpt, device, args.allow_unsafe_checkpoint
@@ -306,6 +446,7 @@ def main() -> None:
     for compile_model in (False, True):
         model = BushidoMythos(cfg).to(device)
         model.load_state_dict(initial_state)
+        model.set_grouped_moe(args.grouped_moe, amp_dtype)
         result = _benchmark_mode(
             model, cfg, batches, device, amp_dtype, args.n_loops,
             args.warmup, compile_model, args.seed, args.compile_backend,
@@ -319,7 +460,8 @@ def main() -> None:
             f"graphs={result.unique_graphs} "
             f"(warmup={result.warmup_unique_graphs}, measured={result.measured_unique_graphs})  "
             f"breaks={result.graph_breaks} "
-            f"(warmup={result.warmup_graph_breaks}, measured={result.measured_graph_breaks})"
+            f"(warmup={result.warmup_graph_breaks}, measured={result.measured_graph_breaks})  "
+            f"grouped_moe_active={str(result.grouped_moe_active).lower()}"
         )
         del model
         gc.collect()
@@ -346,9 +488,25 @@ def main() -> None:
             "grad_checkpoint": args.grad_checkpoint,
             "compile_backend": args.compile_backend,
             "ce_chunk_size": args.ce_chunk_size,
+            "grouped_moe": args.grouped_moe,
+            "grouped_moe_reason": (
+                grouped_moe_reason if args.grouped_moe else "not_requested"
+            ),
+            "grouped_moe_probe": grouped_moe_probe,
             "seed": args.seed,
         },
         "results": [asdict(result) for result in results],
+        "grouped_moe_request_valid": (
+            not args.grouped_moe
+            or all(result.grouped_moe_active for result in results)
+        ),
+        "steady_state_valid": (
+            all(result.measured_unique_graphs == 0 for result in results)
+            and (
+                not args.grouped_moe
+                or all(result.grouped_moe_active for result in results)
+            )
+        ),
         "speedup": speedup,
         "max_loss_delta": max_loss_delta,
     }

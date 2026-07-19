@@ -1,5 +1,6 @@
 import torch
 import pytest
+import bushido_mythos.main as mythos_main
 from bushido_mythos.main import (
     ACTHalting,
     DepthCrossAttention,
@@ -517,6 +518,73 @@ class TestMoEFFN:
         x = torch.randn(B, T, self.cfg.dim)
         out = self.moe(x)
         assert out.abs().sum() > 0
+
+    @staticmethod
+    def _fake_grouped_mm(a, b, *, offs):
+        boundaries = [0] + offs.tolist()
+        if b.ndim == 3:
+            return torch.cat(
+                [
+                    a[boundaries[e] : boundaries[e + 1]] @ b[e]
+                    for e in range(b.shape[0])
+                ],
+                dim=0,
+            )
+        return torch.stack(
+            [
+                a[:, boundaries[e] : boundaries[e + 1]]
+                @ b[boundaries[e] : boundaries[e + 1]]
+                for e in range(len(boundaries) - 1)
+            ]
+        )
+
+    def test_grouped_path_matches_loop_output_and_gradients(self, monkeypatch):
+        monkeypatch.setattr(
+            mythos_main, "_NATIVE_GROUPED_MM", self._fake_grouped_mm
+        )
+        loop_moe = MoEFFN(gqa_cfg()).to(dtype=torch.bfloat16)
+        grouped_moe = MoEFFN(gqa_cfg()).to(dtype=torch.bfloat16)
+        grouped_moe.use_grouped_moe = True
+        grouped_moe.load_state_dict(loop_moe.state_dict())
+        x_loop = torch.randn(
+            B, T, self.cfg.dim, dtype=torch.bfloat16, requires_grad=True
+        )
+        x_grouped = x_loop.detach().clone().requires_grad_(True)
+
+        out_loop = loop_moe(x_loop)
+        out_grouped = grouped_moe(x_grouped)
+        out_loop.square().mean().backward()
+        out_grouped.square().mean().backward()
+
+        assert torch.allclose(out_grouped, out_loop, atol=3e-3, rtol=2e-2)
+        assert torch.allclose(x_grouped.grad, x_loop.grad, atol=3e-3, rtol=2e-2)
+        loop_params = dict(loop_moe.named_parameters())
+        for name, grouped_param in grouped_moe.named_parameters():
+            assert torch.allclose(
+                grouped_param.grad,
+                loop_params[name].grad,
+                atol=3e-3,
+                rtol=2e-2,
+            ), name
+        assert torch.equal(
+            grouped_moe._last_expert_counts, loop_moe._last_expert_counts
+        )
+
+    def test_grouped_runtime_status_reports_inactive_reason(self, monkeypatch):
+        monkeypatch.setattr(mythos_main, "_NATIVE_GROUPED_MM", None)
+        assert mythos_main.grouped_moe_runtime_status(
+            torch.device("cpu"), torch.bfloat16
+        ) == (False, "api_unavailable")
+
+        monkeypatch.setattr(
+            mythos_main, "_NATIVE_GROUPED_MM", self._fake_grouped_mm
+        )
+        assert mythos_main.grouped_moe_runtime_status(
+            torch.device("cpu"), torch.bfloat16
+        ) == (False, "device_not_cuda")
+        assert mythos_main.grouped_moe_runtime_status(
+            torch.device("cuda"), torch.float32
+        ) == (False, "dtype_not_bfloat16")
 
 
 # ---------------------------------------------------------------------------
@@ -1149,6 +1217,13 @@ class TestMoELoadBalancing:
         bias_before = moe.router_bias.clone()
         self.model.update_moe_router_bias()
         assert torch.equal(moe.router_bias, bias_before)
+
+    def test_grouped_moe_switch_does_not_change_checkpoint_schema(self):
+        state_keys = set(self.model.state_dict())
+        active = self.model.set_grouped_moe(True)
+        assert active is False
+        assert self._get_moe().use_grouped_moe is False
+        assert set(self.model.state_dict()) == state_keys
 
 
 # ---------------------------------------------------------------------------

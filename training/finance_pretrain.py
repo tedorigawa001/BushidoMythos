@@ -90,6 +90,7 @@ from bushido_mythos import (
     BushidoMythos,
     MythosConfig,
     chunked_linear_cross_entropy,
+    grouped_moe_runtime_status,
 )
 
 
@@ -1312,7 +1313,22 @@ def train(args: argparse.Namespace) -> None:
     if args.grad_checkpoint != cfg.use_gradient_checkpointing:
         cfg = MythosConfig(**{**cfg.__dict__, "use_gradient_checkpointing": args.grad_checkpoint})
 
+    grouped_moe_requested = getattr(args, "grouped_moe", False)
+    if grouped_moe_requested:
+        grouped_moe_active, grouped_moe_reason = grouped_moe_runtime_status(
+            device, amp_dtype
+        )
+        print(
+            "[grouped_moe] requested=true "
+            f"active={str(grouped_moe_active).lower()} reason={grouped_moe_reason}"
+        )
+        if not grouped_moe_active:
+            raise RuntimeError(
+                "--grouped_moe requested but inactive: " + grouped_moe_reason
+            )
+
     model = BushidoMythos(cfg).to(device)
+    model.set_grouped_moe(grouped_moe_requested, amp_dtype)
 
     # ── Load base weights (skipped when resuming — resume overwrites them) ─
     if base_ckpt is not None and resume_path is None:
@@ -1612,6 +1628,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ce_chunk_size", type=int, default=0,
                    help="Checkpoint tied LM-head cross entropy in token chunks. "
                         "0 disables it; 1024 is a practical A100 starting point.")
+    p.add_argument("--grouped_moe", action="store_true",
+                   help="Use native BF16 grouped GEMM for routed experts on "
+                        "CUDA SM80+/PyTorch 2.11+; otherwise falls back safely.")
     p.add_argument("--optim8bit", action="store_true",
                    help="bitsandbytes の 8-bit AdamW を使う（オプティマイザ状態を 8-bit 量子化、"
                         "8→2 byte/param に削減・ほぼ無損失）。CUDA/bitsandbytes が無い場合は"
