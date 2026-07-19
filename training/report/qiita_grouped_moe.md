@@ -1,12 +1,12 @@
-# MoE の expert ループを grouped GEMM 1発に置き換えて学習 1.99 倍 — ただし最初のベンチは「何も変わらない」だった
+# MoE の expert ループを grouped GEMM に置き換えて学習ベンチ約1.99倍 — ただし最初のベンチは「何も変わらない」だった
 
 ## TL;DR
 
 - 自作 MoE-LLM の routed experts は「expert ごとの Python ループ」で計算していた。再帰ループ 12 回 × 全層で毎ステップ回るため、**ここが学習の最大ボトルネック**だった。
-- PyTorch 2.11 の **native `grouped_mm`** で全 expert を1カーネルにまとめた。primitive は autograd 非対応なので、**forward / 入力勾配 / 重み勾配をすべて grouped GEMM で計算する custom autograd** を書いた。expert 重みは forward 時に stack するため **checkpoint スキーマは不変**。
+- PyTorch 2.11 の **native `grouped_mm`** で全 expert を1カーネルにまとめた。primitive は autograd 非対応なので、**forward / 入力勾配 / 重み勾配をすべて grouped GEMM で計算する custom autograd** を書いた。expert 重みは forward 時に stackするため **model state_dictスキーマは不変**。
 - ところが最初の A100 ベンチは **ベースラインと完全一致**(peak VRAM が MiB 単位で同値、loss 差 8 桁一致)。grouped 経路は**一度も実行されておらず、旧ループへ silent fallback したものを測っていた**。
 - 対策: **fail-fast + 観測可能化**。有効化要求時に不活性なら理由コード付きで即エラー、JSON に `grouped_moe_active` を記録、さらに計測前に実 API を `F.linear` 参照と比較する**数値プローブ**(空 expert 含む、全 delta 0.0 = bit 一致)を仕込んだ。
-- 結果: 定常計測 3 回の中央値で **75,903 tok/s(ベースライン 38,054 比 1.99 倍)**、graph break 増なし、実データ PPL は **85.47 → 85.36(-0.13%、ノイズ水準)**で品質同等。**2 日の学習 run が 1 日強になる**。
+- 結果: 転置修正後の定常計測2回は **75,903 / 75,205 tok/s(ベースライン中央値38,054比で約1.98〜1.99倍)**、graph break増なし、実データPPLは **85.47 → 85.36(-0.13%)**で品質同等。これはモデルforward/backward部分の計測で、データ供給やcheckpoint I/Oを含む総wall-clockは別途計測が必要。
 
 :::note warn
 研究用コードの実験ログです。対象は自作の Recurrent-Depth Transformer(98.6M、MoE FFN、金融特化学習)。数値はこのモデル・この構成での実測であり、一般化はできません。
@@ -50,7 +50,7 @@ routed_out = _GroupedLinear.apply(F.silu(gate) * up, down_weight, offsets)
 
 設計判断のポイント:
 
-- **checkpoint スキーマ不変**: expert 重みを最初から stacked tensor で持てば stack コストは消えるが、`state_dict` の形が変わり既存 checkpoint と非互換になる。forward 時 stack なら互換性は無条件に保たれる(ベンチで問題になったら次の一手)。
+- **model state_dictスキーマ不変**: expert 重みを最初からstacked tensorで持てばstackコストは消えるが、`state_dict`の形が変わり既存checkpointと非互換になる。forward時stackならmodel weightの互換性を保てる。checkpoint payloadには実行モード監査用の`runtime_config.grouped_moe`だけを後方互換で追加した。
 - **custom autograd**: `grouped_mm` は勾配を提供しないので、`torch.autograd.Function` で backward も grouped GEMM で書く。`grad_x = grad_out @ W`、`grad_W = grad_outᵀ @ x`(2D×2D モードは offsets が縮約次元を分割し、グループごとの勾配を返す)。
 - **`.tolist()` 全廃**: dispatch 境界(cumsum)が device 上に留まるので、grouped 経路は `@torch._dynamo.disable` なしで compile にトレースさせられる。
 - CPU 参照実装(monkeypatch)に対して、**出力・入力勾配・全 expert パラメータ勾配・expert counts の一致**をテストで固定した。
@@ -86,18 +86,20 @@ RuntimeError: --grouped_moe requested but inactive: dtype_not_bfloat16
 
 **(2) 観測可能化**: ベンチの各結果とコンソール出力に `grouped_moe_active` を記録し、JSON に `steady_state_valid`(定常判定 AND 経路有効)を保存。「要求したのに inactive な結果」は定常速度として扱えない構造にした。
 
-**(3) 数値プローブ**: 計測前に、実 API の forward / 入力勾配 / 重み勾配を**非正方形状 + 空 expert(counts=[3,0,5])**の条件で `F.linear` 参照値と比較する。転置規約の取り違えや autograd の誤りがあれば計測前に落ちる。A100 での実測は**全 delta 0.0 — native API は `F.linear` 意味論と bit 一致**だった(空グループの扱いまでこれで証明された)。
+**(3) 数値プローブ**: 計測前に、実 API の forward / 入力勾配 / 重み勾配を**非正方形状 + 空 expert**の条件で `F.linear` 参照値と比較する。実際、active化直後のrunは79,396 tok/sまで伸びた一方、first lossが14.60から13.97へ崩れており、正方形の本番重みに隠れた転置規約の誤りを発見した。このrunは性能集計から除外した。転置修正後、A100の整列済みプローブは全delta 0.0、有効runのfirst lossはlegacyと0.0003未満で一致した。
+
+weight-gradient用の2D kernelには16-byte row-stride制約もある。総routing行数が境界を満たさない場合は最終expertへゼロ行をpaddingし、offsetを延長してからgradientを計算する。7 routing行の回帰テストで参照gradientとの一致を確認している。
 
 ## 結果: 1.99 倍、品質同等
 
-修正後、本番相当条件(batch 16、seq 256、8 loops、bf16、gradient checkpointing、steps=warmup=100)で 3 回:
+転置修正後、本番相当条件(batch 16、seq 256、8 loops、bf16、gradient checkpointing、steps=warmup=100)で2回:
 
 | 指標 | ベースライン(compile) | grouped MoE(compile) |
 |---|---|---|
-| tok/s(3回中央値) | 38,054 | **75,903(1.99×)** |
-| eager tok/s | 35,360 | 66,973 / 63,587 / 63,220 |
+| compile tok/s | 38,054(ベースライン中央値) | **75,903 / 75,205(約1.98〜1.99×)** |
+| eager tok/s | 35,360(ベースライン中央値) | 63,587 / 63,220 |
 | Dynamo graphs/breaks | 8 / 1 | 8 / 1(増加なし) |
-| 計測区間の新規 graph | 0 | 0(3回とも) |
+| 計測区間の新規 graph | 0 | 0(両run) |
 
 最後の品質ゲートとして、学習済み checkpoint の **WikiText-103 PPL を grouped 有効/無効で比較**(同一チャンクの決定的評価):
 
@@ -106,6 +108,8 @@ RuntimeError: --grouped_moe requested but inactive: dtype_not_bfloat16
 | PPL | 85.47 | **85.36(-0.13%)** |
 
 差はノイズ水準(grouped 経路は bf16 で通す精度ポリシーのため厳密同値にはならないが、実データへの影響は無視できる)。**本番採用を確定**し、Colab notebook は bf16 対応 GPU + API 存在時のみ `--grouped_moe` を自動付与するようにした。
+
+ただし、この採用判断は学習サイズのtoken batchに限定される。A100のbatch 1 chat生成（prompt 64、生成32 token、4 loops）ではlegacy 46.82 tok/sに対してgrouped 37.51 tok/s（0.801倍）で、peak VRAMも461.1 MiBから547.9 MiBへ増えた。出力IDは完全一致したため数値不具合ではなく、小さいrouting行数ではweight stackとkernel起動コストを償却できないことが原因と考えられる。interactive chatはlegacyを既定とし、groupedはbatch serving向けのopt-inに留めた。
 
 ---
 
@@ -120,11 +124,11 @@ RuntimeError: --grouped_moe requested but inactive: dtype_not_bfloat16
 
 | 項目 | 結果 |
 |---|---|
-| 学習スループット | ◎ 1.99×(38,054 → 75,903 tok/s、3回中央値) |
+| モデル学習ステップ | ◎ 約1.98〜1.99×(38,054 → 75,903 / 75,205 tok/s) |
 | compile 相性 | ◎ graph break 増なし(dynamo.disable も撤廃) |
-| checkpoint 互換 | ◎ スキーマ不変(forward 時 stack) |
+| checkpoint 互換 | ◎ model state_dict不変、runtime設定は後方互換metadata |
 | 数値正しさ | ◎ プローブ全 delta 0.0(bit 一致)、CPU 全勾配一致 |
 | 実データ品質 | ◎ PPL 85.47 → 85.36(-0.13%、ノイズ水準) |
-| 総合 | **2 日の学習 run が 1 日強に** |
+| 総合 | **モデル計算時間は約半減。総wall-clockはデータ/I/O込みで別途計測** |
 
-ACT カリキュラム × torch.compile の両立(前回記事)と合わせ、次の学習 run は `ACT_CURRICULUM + compile + grouped MoE` の約 2 倍構成で回る。実装・ベンチハーネス・計測 JSON はリポジトリにあります: [BushidoMythos](https://github.com/tedorigawa001/BushidoMythos)(`bushido_mythos/main.py`, `training/bench_act_compile.py`, `docs/performance_roadmap.md`)
+ACT カリキュラム × torch.compile の両立(前回記事)と合わせ、次の学習runは`ACT_CURRICULUM + compile + grouped MoE`で実行する。総wall-clockへの効果は、GPU utilization、データ待ち、checkpoint I/Oを含めて記録する。実装・ベンチハーネス・計測JSONはリポジトリにあります: [BushidoMythos](https://github.com/tedorigawa001/BushidoMythos)(`bushido_mythos/main.py`, `training/bench_act_compile.py`, `docs/performance_roadmap.md`)
