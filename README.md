@@ -528,6 +528,20 @@ The implementation keeps existing expert parameters and state-dict keys, stacks 
 
 On A100 with batch 16, sequence 256, 8 loops, gradient checkpointing, and full-logits CE, the validated grouped run reached 75,903 compiled tokens/sec versus 37,564 for the matching legacy run: **2.021x throughput** and **50.5% less measured step time**. Compiled peak allocation increased by only 10 MiB (3,137 to 3,147 MiB). The numerical probe reported zero delta for output and both gradients; grouped versus legacy first-loss differences were 0.000130 eager and 0.000229 compiled. No graphs or breaks were created during measurement. Grouped MoE is therefore the preferred A100/PyTorch 2.11 training path when its runtime preflight succeeds.
 
+PyTorch native GQA SDPA can be compared with the explicit K/V-head expansion fallback using:
+
+```bash
+python3 training/bench_gqa_sdpa.py \
+  --device cuda --dtype bfloat16 --batch_size 16 --seq_len 256 \
+  --n_heads 12 --n_kv_heads 4 --head_dim 64 \
+  --warmup 30 --steps 100 \
+  --json_out checkpoints/finance_a100_v2/bench_gqa_sdpa.json
+```
+
+The benchmark requires the CUDA `enable_gqa=True` API and exits if it is inactive; it never reports a fallback run as native. It records forward/backward throughput, peak allocation, output delta, and Q/K/V gradient deltas. Production GQA attention selects native SDPA automatically when the API is available on CUDA and prints `[native_gqa] active=... reason=...` at training startup. Python 3.9/PyTorch 2.2 and non-CUDA devices retain the expanded-KV fallback. Flash Attention 2 remains the first choice for equal-length prefill when installed.
+
+The validated A100 BF16 result at batch 16, sequence 256, 12 query heads, and 4 KV heads improved isolated GQA forward/backward throughput from 8,826,091 to 15,864,937 tokens/sec (`1.798x`). Peak allocation fell from 76.4 to 68.4 MiB (`-8.0 MiB`, about 10.5%), with zero output and Q/K/V gradient deltas. This is an isolated attention-kernel result; end-to-end training improvement must be read from the phase wall-clock report because MoE, LM head, optimizer, data, and checkpoint work are unchanged.
+
 **VRAM diagnostics (`--mem_log_every`):**
 
 Every `--mem_log_every` steps the training log prints a `[VRAM]` line:

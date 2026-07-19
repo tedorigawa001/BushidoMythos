@@ -172,11 +172,15 @@ CPU fp32ではmaskなし・部分mask・全maskについてloss、hidden gradien
 - SFT maskあり・なし、全mask、部分maskを含む。
 - checkpoint save/load後もembeddingとLM headのweight tyingが維持される。
 
-## P2: GQA native SDPA
+## P2: GQA native SDPA（実装・A100計測済み）
 
 現在のSDPA fallbackはPyTorch 2.2互換性のため、K/V headを`repeat_interleave()`でquery head数まで展開します。native GQAを利用できるPyTorch 2.5以降では、`enable_gqa=True`相当の経路を使い、この展開を削減できます。
 
-導入時はPyTorchバージョンとbackend capabilityを実行時判定し、Python 3.9 + PyTorch 2.2では現在の経路へfallbackします。Flash Attention 2が利用可能な場合との優先順位も明示します。
+PyTorchの`scaled_dot_product_attention`が`enable_gqa`を公開し、deviceがCUDAの場合にnative経路を自動選択します。Python 3.9 + PyTorch 2.2やCPU/MPSでは現在の`repeat_interleave()`経路を維持します。Flash Attention 2が利用可能な同長prefillでは既存のFlash Attention経路を優先し、chunked decodeなどその対象外ではnative SDPAを使用します。
+
+学習起動時は`[native_gqa] active=... reason=...`を必ず1行出力します。`training/bench_gqa_sdpa.py`はnativeを要求したのにinactiveなら即時エラーとし、legacy/nativeのforward/backward throughput、peak VRAM、output差、Q/K/V gradient差をJSONへ記録します。
+
+A100 BF16、batch 16、sequence 256、12 query heads/4 KV headsの初回計測では、legacy 8,826,091 tokens/secに対してnative 15,864,937 tokens/sec（1.798倍）でした。peak allocationは76.4から68.4 MiBへ8.0 MiB（約10.5%）減少し、outputとQ/K/V gradientの最大差はすべて0でした。nativeを本番既定として維持します。ただしこれはGQA単体のforward/backward結果であり、総学習wall-clock効果はphase JSONで別に確認します。
 
 ## P2: ACTの実計算スキップ
 

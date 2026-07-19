@@ -14,6 +14,7 @@ from bushido_mythos.main import (
     apply_rope,
     chunked_linear_cross_entropy,
     grouped_moe_runtime_status,
+    native_gqa_sdpa_runtime_status,
     loop_index_embedding,
     precompute_rope_freqs,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "apply_rope",
     "chunked_linear_cross_entropy",
     "grouped_moe_runtime_status",
+    "native_gqa_sdpa_runtime_status",
     "loop_index_embedding",
     "mythos_tiny",
     "mythos_1b",

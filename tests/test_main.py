@@ -405,6 +405,59 @@ class TestGQAttention:
         out = self.attn(x, self.freqs, mask=mask)
         assert out.shape == (B, T, self.cfg.dim)
 
+    def test_legacy_sdpa_expands_kv_heads(self, monkeypatch):
+        calls = []
+
+        def fake_sdpa(q, k, v, **kwargs):
+            calls.append((q.shape, k.shape, v.shape, kwargs))
+            return q
+
+        monkeypatch.setattr(
+            mythos_main.F, "scaled_dot_product_attention", fake_sdpa
+        )
+        q = torch.randn(1, 4, 3, 8)
+        k = torch.randn(1, 2, 3, 8)
+        v = torch.randn(1, 2, 3, 8)
+        mythos_main._gqa_scaled_dot_product_attention(
+            q, k, v, attn_mask=None, dropout_p=0.0,
+            is_causal=True, use_native_gqa=False,
+        )
+
+        assert calls[0][1][-3] == 4
+        assert calls[0][2][-3] == 4
+        assert "enable_gqa" not in calls[0][3]
+
+    def test_native_sdpa_preserves_kv_heads_and_sets_flag(self, monkeypatch):
+        calls = []
+
+        def fake_sdpa(q, k, v, **kwargs):
+            calls.append((q.shape, k.shape, v.shape, kwargs))
+            return q
+
+        monkeypatch.setattr(
+            mythos_main.F, "scaled_dot_product_attention", fake_sdpa
+        )
+        q = torch.randn(1, 4, 3, 8)
+        k = torch.randn(1, 2, 3, 8)
+        v = torch.randn(1, 2, 3, 8)
+        mythos_main._gqa_scaled_dot_product_attention(
+            q, k, v, attn_mask=None, dropout_p=0.0,
+            is_causal=True, use_native_gqa=True,
+        )
+
+        assert calls[0][1][-3] == 2
+        assert calls[0][2][-3] == 2
+        assert calls[0][3]["enable_gqa"] is True
+
+    def test_native_gqa_status_requires_api_and_cuda(self, monkeypatch):
+        monkeypatch.setattr(mythos_main, "_SDPA_SUPPORTS_GQA", True)
+        assert mythos_main.native_gqa_sdpa_runtime_status(
+            torch.device("cpu")
+        ) == (False, "enable_gqa requires CUDA (device=cpu)")
+        assert mythos_main.native_gqa_sdpa_runtime_status(
+            torch.device("cuda")
+        ) == (True, "torch SDPA enable_gqa")
+
 
 # ---------------------------------------------------------------------------
 # MLAttention

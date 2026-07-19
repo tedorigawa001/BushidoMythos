@@ -15,6 +15,56 @@ except ImportError:
     _HAS_FLASH_ATTN = False
 
 
+_SDPA_SUPPORTS_GQA = "enable_gqa" in (
+    F.scaled_dot_product_attention.__doc__ or ""
+)
+
+
+def native_gqa_sdpa_runtime_status(device: torch.device) -> tuple[bool, str]:
+    """Return whether PyTorch native GQA SDPA is usable on this runtime."""
+    device = torch.device(device)
+    if not _SDPA_SUPPORTS_GQA:
+        return False, "scaled_dot_product_attention has no enable_gqa API"
+    if device.type != "cuda":
+        return False, f"enable_gqa requires CUDA (device={device.type})"
+    return True, "torch SDPA enable_gqa"
+
+
+def _gqa_scaled_dot_product_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    attn_mask: Optional[torch.Tensor],
+    dropout_p: float,
+    is_causal: bool,
+    use_native_gqa: bool,
+) -> torch.Tensor:
+    """Run SDPA with native GQA or the PyTorch 2.2-compatible KV expansion."""
+    if use_native_gqa:
+        return F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            enable_gqa=True,
+        )
+
+    groups = q.shape[-3] // k.shape[-3]
+    k = k.repeat_interleave(groups, dim=-3)
+    v = v.repeat_interleave(groups, dim=-3)
+    return F.scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+    )
+
+
 def chunked_linear_cross_entropy(
     hidden: torch.Tensor,
     weight: torch.Tensor,
@@ -461,18 +511,18 @@ class GQAttention(nn.Module):
         else:
             # PyTorch SDPA selects the best available fused backend and avoids
             # materializing the full (B, H, T, S) attention probability tensor.
-            k = k.repeat_interleave(self.groups, dim=2)
-            v = v.repeat_interleave(self.groups, dim=2)
             q = q.transpose(1, 2)  # (B, H, T, head_dim)
             k = k.transpose(1, 2)
             v = v.transpose(1, 2)
-            out = F.scaled_dot_product_attention(
+            use_native_gqa = _SDPA_SUPPORTS_GQA and q.is_cuda
+            out = _gqa_scaled_dot_product_attention(
                 q,
                 k,
                 v,
                 attn_mask=mask,
                 dropout_p=self.dropout_p if self.training else 0.0,
                 is_causal=is_causal,
+                use_native_gqa=use_native_gqa,
             )
             out = out.transpose(1, 2).contiguous().view(B, T, self.n_heads * self.head_dim)
 

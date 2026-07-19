@@ -239,6 +239,7 @@ from bushido_mythos import (
     MythosConfig,
     chunked_linear_cross_entropy,
     grouped_moe_runtime_status,
+    native_gqa_sdpa_runtime_status,
 )
 
 
@@ -1583,6 +1584,13 @@ def train(args: argparse.Namespace) -> None:
     # Apply seq_len override
     if args.seq_len is not None:
         cfg = MythosConfig(**{**cfg.__dict__, "max_seq_len": args.seq_len})
+
+    if cfg.attn_type == "gqa":
+        native_gqa_active, native_gqa_reason = native_gqa_sdpa_runtime_status(device)
+        print(
+            "[native_gqa] "
+            f"active={str(native_gqa_active).lower()} reason={native_gqa_reason}"
+        )
 
     # Apply gradient checkpointing override (always force from CLI arg to avoid
     # accidentally inheriting a stale True from a checkpoint's cfg)
