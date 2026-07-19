@@ -438,7 +438,8 @@ python training/finance_pretrain.py \
 | `--grad_checkpoint` | `False` | Enable gradient checkpointing in the recurrent loop. Reduces activation memory in proportion to loop depth (larger effect with more loops) at the cost of ~30-40% extra compute |
 | `--ce_chunk_size` | `0` | Checkpoint tied LM-head cross entropy in token chunks, avoiding retention of full `(B,T,vocab)` logits. `0` disables it; benchmark `1024` first because backward recomputes the LM head |
 | `--grouped_moe` | `False` | Require native BF16 grouped GEMM for routed experts on CUDA SM80+ with PyTorch 2.11+. Prints active status/reason and exits if requested but unavailable; omission retains the legacy expert loop |
-| `--optim8bit` | `False` | Use bitsandbytes 8-bit AdamW (optimizer states 8→2 bytes/param, near-lossless). Requires CUDA + `pip install bitsandbytes`; falls back to standard AdamW if unavailable. Resume must use the same setting (a mismatch resets optimizer state with a warning) |
+| `--optim8bit` | `False` | Require bitsandbytes 8-bit AdamW (optimizer states 8→2 bytes/param, near-lossless). Requires CUDA + `pip install bitsandbytes`; unavailable requests fail immediately instead of falling back. Resume must use the same setting (a mismatch resets optimizer state with a warning) |
+| `--fused_optimizer` | `False` | Require CUDA `torch.optim.AdamW(fused=True)`. Mutually exclusive with `--optim8bit`; unsupported devices fail immediately instead of falling back. Uses fp32 optimizer states, so compare VRAM as well as speed |
 | `--mem_log_every` | `100` | Log VRAM stats (`alloc` / `reserved` / `peak` / `frag`) every N steps. Helps diagnose OOM root cause. `0` = disable |
 | `--loop_schedule` | `off` | Recurrent-depth control (experimental). `off` = model default / `fixed` = pin `n_loops` to `max_loop_iters` (clean baseline) / `curriculum` = phase-based variable recurrence (see below) |
 | `--loop_tail_max` | `12` | `curriculum`: max loops in the upward tail (Phase 2+). Set the base checkpoint's `max_loop_iters` to this value so the tail gets its own depth-LoRA |
@@ -541,6 +542,21 @@ python3 training/bench_gqa_sdpa.py \
 The benchmark requires the CUDA `enable_gqa=True` API and exits if it is inactive; it never reports a fallback run as native. It records forward/backward throughput, peak allocation, output delta, and Q/K/V gradient deltas. Production GQA attention selects native SDPA automatically when the API is available on CUDA and prints `[native_gqa] active=... reason=...` at training startup. Python 3.9/PyTorch 2.2 and non-CUDA devices retain the expanded-KV fallback. Flash Attention 2 remains the first choice for equal-length prefill when installed.
 
 The validated A100 BF16 result at batch 16, sequence 256, 12 query heads, and 4 KV heads improved isolated GQA forward/backward throughput from 8,826,091 to 15,864,937 tokens/sec (`1.798x`). Peak allocation fell from 76.4 to 68.4 MiB (`-8.0 MiB`, about 10.5%), with zero output and Q/K/V gradient deltas. This is an isolated attention-kernel result; end-to-end training improvement must be read from the phase wall-clock report because MoE, LM head, optimizer, data, and checkpoint work are unchanged.
+
+Compare standard AdamW, fused AdamW, and 8-bit AdamW under the same full training workload with:
+
+```bash
+python3 training/bench_optimizer.py \
+  --ckpt checkpoints/finance_a100_v2/phase1_final.pt \
+  --device cuda --dtype bfloat16 --modes adamw fused 8bit \
+  --steps 100 --warmup 30 --batch_size 16 --seq_len 256 --n_loops 8 \
+  --grad_checkpoint --grouped_moe --compile \
+  --json_out checkpoints/finance_a100_v2/bench_optimizer.json
+```
+
+Every requested mode records its actual backend and an inactive 8-bit/fused request aborts the benchmark, preventing fallback results from being mislabeled. The JSON separates end-to-end tokens/sec, optimizer milliseconds per step, peak allocation, and loss-trajectory differences. Fused and standard AdamW share a compatible state format; checkpoints record the backend and warn if it changes on resume. Switching between 8-bit and fp32-state AdamW remains a state reset because their state layouts differ.
+
+On A100 BF16 with batch 16, sequence 256, 8 loops, gradient checkpointing, grouped MoE, and compile enabled, fused AdamW reached 55,074 tokens/sec versus 47,396 for 8-bit (`1.162x`). Optimizer time fell from 13.002 to 2.278 ms/step (`-82.5%`), while peak allocation increased from 3,322.1 to 3,883.3 MiB (`+561.2 MiB`). Standard AdamW reached 51,838 tokens/sec at 6.410 ms/step and 3,883.2 MiB. Because the A100 40GB workload retains substantial headroom, the Colab configuration selects fused AdamW on Ampere-or-newer GPUs and keeps 8-bit on older GPUs where memory pressure is more important. Do not switch an in-progress 8-bit run merely for speed: its optimizer state is incompatible and will reset; use fused from the start of a new run or accept the boundary reset explicitly.
 
 **VRAM diagnostics (`--mem_log_every`):**
 

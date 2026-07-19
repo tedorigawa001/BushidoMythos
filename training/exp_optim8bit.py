@@ -10,9 +10,8 @@
 データは乱数トークン（optimizer 比較に内容は無関係・キャッシュ/ネットワーク非依存）。
 
 注意:
-  - 8-bit Adam は CUDA + bitsandbytes が必要。無い環境では make_optimizer が通常
-    AdamW にフォールバックするため、両条件とも fp32 になり「差なし」になる
-    （= GPU で実行すること）。
+  - 8-bit Adam は CUDA + bitsandbytes が必要。無い環境では測定を誤認しないよう
+    fail-fastする（= GPUでbitsandbytesを導入して実行すること）。
 
 使い方:
     python training/exp_optim8bit.py --steps 50 --batch_size 4 --seq_len 256
@@ -92,7 +91,7 @@ def main():
 
     device = torch.device(args.device if (args.device != "cuda" or torch.cuda.is_available()) else "cpu")
     if device.type != "cuda":
-        print("[note] CUDA 無し → 8-bit は通常 AdamW にフォールバックします（差は出ません）。")
+        raise RuntimeError("8-bit optimizer comparison requires CUDA")
 
     # cfg だけ軽量読込（モデルを VRAM に残さない → ピークメモリ測定を汚さない）
     cfg0 = _load_cfg(args.ckpt, args.allow_unsafe_checkpoint)

@@ -11,7 +11,7 @@
 - 予約ストレージを使うKV cache。保存済みの過去はdetachし、現在チャンクのK/Vは勾配を維持する
 - 生成時の最終位置だけの語彙projection
 - recurrent loopのgradient checkpointing
-- CUDA AMP（float16/bfloat16）、8-bit AdamW、`torch.compile`
+- CUDA AMP（float16/bfloat16）、fused/8-bit AdamW、`torch.compile`
 - ACT curriculumのcompile-safe tensor buffer（A100定常計測済み、総wall-clock計測待ち）
 - dataset build、batch wait、optimizer、checkpoint save、総wall-clockの学習ログとJSON
 - ColabローカルNVMeへのatomic checkpoint保存と単一workerによる非同期Driveコピー
@@ -197,16 +197,20 @@ ACTはhalt済み位置のhidden更新を止めますが、密なAttentionとMoE�
 
 品質への影響があるため、固定loop baselineとのperplexity、金融行動評価、平均loop数を必ず併記します。
 
-## P2: Fused optimizer
+## P2: Fused optimizer（実装・A100比較済み）
 
 CUDAでは通常のAdamWに`fused=True`を利用できる環境があります。8-bit AdamWを使わない場合の低リスクな高速化候補です。
 
-現行の本番設定は`OPTIM8BIT=True`の8-bit AdamWです。fused fp32 AdamWへ切り替えるとoptimizer stepは速くなる可能性がありますが、optimizer stateのVRAMは増えます。そのため「fused fp32」と「8-bit」の比較は速度だけでなく、peak VRAMと利用可能batch/sequence長を含む総throughputで判断します。
+現行NotebookはA100/Ampere+でfused AdamW、旧GPUで8-bit AdamWを選択します。fused fp32 AdamWはoptimizer stateのVRAMが増えるため、「fused fp32」と「8-bit」の比較は速度だけでなく、peak VRAMと利用可能batch/sequence長を含む総throughputで判断します。
 
-- capabilityを検出してfused AdamWを選択する。
-- 未対応device/PyTorchでは通常AdamWへfallbackする。
-- resume時にoptimizer state形式の互換性を確認する。
-- 8-bit AdamWとの速度・VRAM・lossを別々に比較する。
+- `--fused_optimizer`指定時だけcapabilityを検出してfused AdamWを選択する。
+- 要求したのに非対応ならfallbackせず即時エラーとする。
+- checkpointにbackendを記録する。通常/fused AdamW間は互換stateを復元して警告し、8-bitとの切替はstateをリセットする。
+- `training/bench_optimizer.py`で通常、fused、8-bit AdamWの速度・optimizer時間・VRAM・lossを別々に比較する。
+
+比較はA100 BF16、batch 16、sequence 256、8 loops、gradient checkpointing、grouped MoE、`torch.compile`の本番相当条件で実施しました。fusedは55,074 tokens/sec、optimizer 2.278 ms/step、peak 3883.3 MiB、8-bitは47,396 tokens/sec、13.002 ms/step、3322.1 MiBでした。fusedは総throughput 1.162倍、optimizer時間82.5%短縮、VRAMは561.2 MiB増です。A100 40GBではbatchを下げないため新規runの既定として採用します。通常AdamWは51,838 tokens/sec、6.410 ms/step、3883.2 MiBで、fusedは同じVRAMでさらに6.2%高速でした。
+
+初回実行ではColabにbitsandbytesが無く、`OPTIM8BIT=True`が通常AdamWへfallbackしていたことをハーネスが検出しました。以後は`--optim8bit`も要求時fail-fastとし、Notebookの依存導入は`subprocess.run(..., check=True)`とimport/version確認を必須にします。依存導入とベンチは同じ`sys.executable`を使います。
 
 ## P3: 複数GPU学習
 

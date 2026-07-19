@@ -94,6 +94,20 @@ class TestRequiredFlags:
                 f"Training cell {i} missing GROUPED_MOE conditional"
             )
 
+    def test_optimizer_switches_are_exclusive_and_present_in_all_cells(self):
+        all_source = "".join(
+            "".join(cell["source"]) for cell in _load_nb()["cells"]
+        )
+        assert "OPTIM8BIT = not FUSED_OPTIMIZER" in all_source
+        for i, src in enumerate(self.cells):
+            assert 'if OPTIM8BIT:' in src and 'cmd.append("--optim8bit")' in src, (
+                f"Training cell {i} missing OPTIM8BIT conditional"
+            )
+            assert (
+                'if FUSED_OPTIMIZER:' in src
+                and 'cmd.append("--fused_optimizer")' in src
+            ), f"Training cell {i} missing FUSED_OPTIMIZER conditional"
+
     def test_subprocess_failure_propagates_in_all_training_cells(self):
         """A failed training process must fail its Colab cell."""
         for i, src in enumerate(self.cells):
@@ -147,6 +161,15 @@ class TestNotebookStructure:
         )
         assert "LOCAL_CACHE" in all_src, "Cache setup cell not found"
         assert "DRIVE_CACHE" in all_src, "Drive cache variable not found"
+
+    def test_dependency_install_fails_loudly_and_checks_bitsandbytes(self):
+        install = next(
+            cell for cell in self.nb["cells"] if cell.get("id") == "install-deps"
+        )
+        source = "".join(install["source"])
+        assert "subprocess.run" in source
+        assert "check=True" in source
+        assert "import bitsandbytes" in source
 
     def test_save_cache_cell_exists(self):
         """Notebook must contain a save-back cell after training."""

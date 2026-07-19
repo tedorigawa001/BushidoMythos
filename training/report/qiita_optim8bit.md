@@ -91,7 +91,7 @@ python training/exp_optim8bit.py --device cuda \
 | フェーズ | **学習** | 推論 / QLoRA |
 | 品質リスク | ほぼ無し | 小〜中（要検証） |
 
-今回は**学習トラック単独**。安全に積める(`--optim8bit` フラグ、CUDA/bitsandbytes 無しは AdamW に自動フォールバック、resume で設定不一致なら momentum リセット+警告)。
+今回は**学習トラック単独**。`--optim8bit`で明示的に有効化し、CUDA/bitsandbytesが無ければ設定誤認を防ぐため即時エラーにする。resumeで設定が不一致ならmomentumをリセットして警告する。
 
 ---
 

@@ -37,6 +37,8 @@ from training.finance_pretrain import (
     run_phase,
     _cycle_batches,
     make_optimizer,
+    fused_adamw_runtime_status,
+    optimizer_backend,
     _curriculum_ramp,
     apply_act_curriculum,
     _optimizer_state_compatible,
@@ -832,7 +834,7 @@ class TestMemoryReplay:
 
 
 class TestMakeOptimizer:
-    """make_optimizer: fp32 AdamW by default; safe fallback for 8-bit without CUDA/bnb."""
+    """make_optimizer: requested accelerated backends must fail fast."""
 
     def _params(self):
         return list(torch.nn.Linear(8, 8).parameters())
@@ -840,15 +842,44 @@ class TestMakeOptimizer:
     def test_default_is_adamw(self):
         opt = make_optimizer(self._params(), lr=1e-4, optim8bit=False)
         assert type(opt).__name__ == "AdamW"
+        assert optimizer_backend(opt) == "torch_adamw"
 
-    def test_8bit_falls_back_without_cuda(self):
-        # CPU 環境では bitsandbytes 8-bit は使えず、通常 AdamW にフォールバックする
-        opt = make_optimizer(self._params(), lr=1e-4, optim8bit=True)
-        assert type(opt).__name__ == "AdamW"  # クラッシュせずフォールバック
+    def test_fused_requires_cuda_parameters(self):
+        with pytest.raises(RuntimeError, match="requires CUDA"):
+            make_optimizer(self._params(), lr=1e-4, fused=True)
+
+    def test_fused_and_8bit_are_mutually_exclusive(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            make_optimizer(
+                self._params(), lr=1e-4, optim8bit=True, fused=True
+            )
+
+    def test_fused_backend_is_reported(self, monkeypatch):
+        class FakeFusedAdamW:
+            def __init__(self, params, **kwargs):
+                self.param_groups = [{"params": list(params), **kwargs}]
+
+        monkeypatch.setattr(
+            finance_pretrain,
+            "fused_adamw_runtime_status",
+            lambda device: (True, "test"),
+        )
+        monkeypatch.setattr(finance_pretrain, "AdamW", FakeFusedAdamW)
+        opt = make_optimizer(self._params(), lr=1e-4, fused=True)
+        assert optimizer_backend(opt) == "torch_adamw_fused"
+
+    def test_fused_status_reports_cpu_inactive(self):
+        active, reason = fused_adamw_runtime_status(torch.device("cpu"))
+        assert active is False
+        assert "requires CUDA" in reason
+
+    def test_8bit_fails_without_cuda(self):
+        with pytest.raises(RuntimeError, match="8-bit optimizer requested but inactive"):
+            make_optimizer(self._params(), lr=1e-4, optim8bit=True)
 
     def test_optimizer_can_step(self):
         params = self._params()
-        opt = make_optimizer(params, lr=1e-3, optim8bit=True)
+        opt = make_optimizer(params, lr=1e-3)
         params[0].sum().backward()
         opt.step()  # 例外が出ないこと
 

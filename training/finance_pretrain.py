@@ -46,6 +46,7 @@ from __future__ import annotations  # アノテーション遅延評価(int | No
 import argparse
 import atexit
 import datetime
+import inspect
 import json
 import math
 import queue
@@ -784,24 +785,73 @@ def build_trading_methodology_sft(
 # LR schedule
 # ──────────────────────────────────────────────────────────────
 
-def make_optimizer(params, lr: float, optim8bit: bool = False):
+def fused_adamw_runtime_status(device: torch.device) -> tuple[bool, str]:
+    """Return whether torch AdamW fused kernels can be requested safely."""
+    if "fused" not in inspect.signature(AdamW).parameters:
+        return False, "torch.optim.AdamW has no fused API"
+    device = torch.device(device)
+    if device.type != "cuda":
+        return False, f"fused AdamW requires CUDA parameters (device={device.type})"
+    return True, "torch.optim.AdamW fused"
+
+
+def optimizer_backend(optimizer) -> str:
+    if "bitsandbytes" in type(optimizer).__module__.lower():
+        return "bitsandbytes_adamw8bit"
+    if any(bool(group.get("fused", False)) for group in optimizer.param_groups):
+        return "torch_adamw_fused"
+    return "torch_adamw"
+
+
+def make_optimizer(
+    params, lr: float, optim8bit: bool = False, fused: bool = False,
+    log_status: bool = True,
+):
     """AdamW を作る。optim8bit=True かつ bitsandbytes/CUDA が使えれば 8-bit Adam。
 
     8-bit Adam はオプティマイザ状態(m, v)を block-wise に 8-bit 量子化し、
-    fp32 の 8 byte/param を ~2 byte/param に削減する(ほぼ無損失)。使えない環境
-    (CUDA/bitsandbytes 無し)では通常 AdamW に安全にフォールバックする。
+    fp32 の 8 byte/param を ~2 byte/param に削減する(ほぼ無損失)。明示的に要求した
+    optimizerが使えない場合は、測定・本番設定の誤認を防ぐためfail-fastする。
     """
+    if optim8bit and fused:
+        raise ValueError("optim8bit and fused AdamW are mutually exclusive")
+    params = list(params)
+    if not params:
+        raise ValueError("optimizer requires at least one parameter")
     kw = dict(lr=lr, betas=(0.9, 0.95), weight_decay=0.1, eps=1e-8)
     if optim8bit:
         try:
             import bitsandbytes as bnb
             if not torch.cuda.is_available():
                 raise RuntimeError("bitsandbytes 8-bit optimizer は CUDA が必要です")
-            print("Optimizer: bitsandbytes AdamW8bit (optimizer states in 8-bit)")
-            return bnb.optim.AdamW8bit(params, **kw)
+            optimizer = bnb.optim.AdamW8bit(params, **kw)
         except Exception as e:
-            print(f"  [warn] 8-bit optimizer 利用不可 ({e}); 通常 AdamW にフォールバック")
-    print("Optimizer: torch.optim.AdamW (fp32 states)")
+            if log_status:
+                print(
+                    "[optimizer] requested=8bit active=false "
+                    f"reason={e}"
+                )
+            raise RuntimeError(
+                "8-bit optimizer requested but inactive: " + str(e)
+            ) from e
+        if log_status:
+            print(
+                "[optimizer] requested=8bit active=true "
+                "backend=bitsandbytes_adamw8bit"
+            )
+        return optimizer
+    if fused:
+        active, reason = fused_adamw_runtime_status(params[0].device)
+        if log_status:
+            print(
+                "[fused_optimizer] requested=true "
+                f"active={str(active).lower()} reason={reason}"
+            )
+        if not active:
+            raise RuntimeError("fused optimizer requested but inactive: " + reason)
+        return AdamW(params, fused=True, **kw)
+    if log_status:
+        print("Optimizer: torch.optim.AdamW (fp32 states)")
     return AdamW(params, **kw)
 
 
@@ -989,6 +1039,7 @@ def save_checkpoint(
         "model_state": _strip_compile_prefix(model.state_dict()),
         "optimizer_state": optimizer.state_dict(),
         "optimizer_type": type(optimizer).__name__,  # resume 時の不一致検出用
+        "optimizer_backend": optimizer_backend(optimizer),
         "scheduler_state": scheduler.state_dict(),
         "cfg": cfg.__dict__,
         "runtime_config": _runtime_config(model),
@@ -1085,6 +1136,19 @@ def load_checkpoint(path: str, model, optimizer, scheduler, scaler=None, allow_u
         # 合わず壊れる。不一致/失敗時は警告してリセット（model/scheduler は継続）。
         saved_optim = ckpt.get("optimizer_type")
         cur_optim = type(optimizer).__name__
+        saved_backend = ckpt.get("optimizer_backend")
+        current_backend = optimizer_backend(optimizer)
+        if (
+            saved_backend is not None
+            and saved_backend != current_backend
+            and {saved_backend, current_backend}
+            <= {"torch_adamw", "torch_adamw_fused"}
+        ):
+            print(
+                "  [warn] optimizer backend changed "
+                f"(saved={saved_backend} / current={current_backend}); "
+                "AdamW state is compatible and will be restored."
+            )
         type_mismatch = saved_optim is not None and saved_optim != cur_optim
         # optimizer_type が無い旧 checkpoint でも state 構造から非互換を検出する
         # (例: fp32 AdamW state を --optim8bit の AdamW8bit にロード → step で KeyError)
@@ -1655,8 +1719,12 @@ def train(args: argparse.Namespace) -> None:
     p5_total = p4_total + args.phase5_steps
 
     # ── Optimizer ─────────────────────────────────────────────
-    optimizer = make_optimizer(model.parameters(), args.lr,
-                               optim8bit=getattr(args, "optim8bit", False))
+    optimizer = make_optimizer(
+        model.parameters(),
+        args.lr,
+        optim8bit=getattr(args, "optim8bit", False),
+        fused=getattr(args, "fused_optimizer", False),
+    )
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lambda step: lr_lambda(step, args.warmup_steps, p5_total),
@@ -1861,6 +1929,7 @@ def train(args: argparse.Namespace) -> None:
                 "dtype": str(amp_dtype),
                 "grouped_moe": grouped_moe_requested,
                 "compile": bool(args.compile),
+                "optimizer_backend": optimizer_backend(optimizer),
             },
         }
     )
@@ -1985,7 +2054,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--optim8bit", action="store_true",
                    help="bitsandbytes の 8-bit AdamW を使う（オプティマイザ状態を 8-bit 量子化、"
                         "8→2 byte/param に削減・ほぼ無損失）。CUDA/bitsandbytes が無い場合は"
-                        "通常 AdamW に自動フォールバック")
+                        "fallbackせず即時エラー")
+    p.add_argument("--fused_optimizer", action="store_true",
+                   help="CUDA fused torch.optim.AdamW を要求する。--optim8bit と排他。"
+                        "非対応環境では fallback せず即時エラー")
 
     # Loop curriculum (experimental)
     p.add_argument("--loop_schedule", choices=["off", "fixed", "curriculum"], default="off",
@@ -2041,6 +2113,8 @@ def parse_args() -> argparse.Namespace:
             "--keep_local_completed must be >= 0 "
             f"(got {args.keep_local_completed})"
         )
+    if args.optim8bit and args.fused_optimizer:
+        p.error("--optim8bit and --fused_optimizer are mutually exclusive")
     if args.loop_schedule == "curriculum":
         if args.loop_tail_max < 1:
             p.error(f"--loop_tail_max must be >= 1 (got {args.loop_tail_max})")
