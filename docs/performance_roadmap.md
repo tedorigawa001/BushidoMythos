@@ -113,6 +113,8 @@ ColabのDriveへ大きなcheckpointを直接、頻繁に保存すると、serial
 
 `--local_ckpt_dir /content/checkpoints/<run>`を指定した場合だけ非同期経路を有効にし、`--ckpt_dir`はresume元かつ耐久保存先のまま維持します。`wall_clock_phaseN.json`にはphase/総wall-clock、dataset build、data wait、optimizer、serialize、copy累計、最大queue深度を保存します。hard runtime lossではpending中のローカルファイルを失うため、phase finalのflushとDrive上の直近periodic checkpointを耐障害性の境界とします。
 
+`training/report_wall_clock.py`を追加し、単一または複数phase reportから総wall-clock、phase時間、dataset build、data wait、optimizer、foreground serialize、background copy、copy帯域、queue深度を同じ形式で集計します。A/B比較ではphase名・step範囲・処理token数とdtype、compile、grouped MoE、Liger CE、optimizer backendが一致しなければ停止します。非同期copyにpendingまたはerrorが残るreportも無効です。backgroundの`copy_seconds`は学習と重なり得るためwall-clockから減算せず、直接保存runに対する`wall_clock_speedup`を採否指標にします。
+
 次の本番runで、直接Drive保存との総wall-clock差、foreground serialize時間、background copy時間、最大queue深度、Driveからのresumeを確認します。`max_queue_depth`が継続的に増える場合は保存間隔またはcheckpointサイズを見直します。
 
 ## P1: MoE grouped GEMM

@@ -460,6 +460,26 @@ python training/finance_pretrain.py \
 
 Checkpoints save `scheduler_state`, `scaler_state` for float16 training, and phase metadata, so interrupted runs can resume with the same schedule. A phase is skipped automatically if the current step has already passed its endpoint. With `--local_ckpt_dir`, one background worker copies completed local files to `--ckpt_dir` through a temporary file and atomic rename. Periodic copies may overlap training; every phase-final checkpoint is flushed to the durable directory before the phase is reported complete. The log prints queue depth, serialization time, copy time, and copy failures. Normal process exit, `KeyboardInterrupt`, and uncaught Python exceptions flush pending copies through an exit hook. A hard Colab runtime loss can still discard files that were logged as pending.
 
+Summarize completed phase reports without treating background copy time as foreground training time:
+
+```bash
+python3 training/report_wall_clock.py \
+  checkpoints/finance_a100_v2/wall_clock_phase*.json \
+  --json_out checkpoints/finance_a100_v2/wall_clock_summary.json
+```
+
+For an A/B comparison, run the same phase, step range, batch configuration, runtime switches, and checkpoint cadence once with direct Drive writes and once with `--local_ckpt_dir`. Then compare the two reports with the direct run first:
+
+```bash
+python3 training/report_wall_clock.py \
+  checkpoints/direct/wall_clock_phase1.json \
+  checkpoints/async/wall_clock_phase1.json \
+  --labels direct async --compare \
+  --json_out checkpoints/wall_clock_compare.json
+```
+
+Comparison fails if phase/token signatures or material runtime settings differ. It also rejects asynchronous reports with pending copies or recorded copy errors. `wall_clock_speedup` and effective tokens/sec are the adoption metrics; `copy_seconds` is reported separately because much of it can overlap training.
+
 **Loop curriculum (`--loop_schedule curriculum`, experimental):**
 
 A Recurrent-Depth Transformer runs the recurrent block `n_loops` times, so compute scales with loop count. Training at a variable (often lower) recurrence saves compute and, when an upward tail is included, teaches the model to extrapolate to deeper inference loops (test-time scaling). The schedule:

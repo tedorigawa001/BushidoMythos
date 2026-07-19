@@ -202,6 +202,15 @@ class TestNotebookStructure:
             "Cache save-back (shutil.copytree) not found in notebook"
         )
 
+    def test_wall_clock_report_cell_precedes_cache_copy(self):
+        ids = [cell.get("id") for cell in self.nb["cells"]]
+        report = ids.index("run-wall-clock-report")
+        cache_copy = ids.index("HsHE3VbzJ3Sb")
+        source = "".join(self.nb["cells"][report]["source"])
+        assert "training/report_wall_clock.py" in source
+        assert "subprocess.run(cmd, check=True)" in source
+        assert report < cache_copy
+
     def test_inference_cell_exists(self):
         """Notebook must have an inference test cell."""
         sources = ["".join(c["source"]) for c in self.nb["cells"]]
