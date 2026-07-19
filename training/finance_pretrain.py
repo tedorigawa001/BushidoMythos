@@ -44,11 +44,16 @@ Usage:
 from __future__ import annotations  # アノテーション遅延評価(int | None 等を Py3.9 でも許可)
 
 import argparse
+import atexit
 import datetime
+import json
 import math
+import queue
 import random
 import re
+import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -82,6 +87,149 @@ class _Tee:
     def close(self) -> None:
         sys.stdout = self._stdout
         self._file.close()
+
+
+class AsyncCheckpointCopier:
+    """Copy locally serialized checkpoints to durable storage in one worker."""
+
+    def __init__(
+        self, destination_dir: Path, keep_last_n_steps: int = 3,
+        keep_local_completed: int = 1,
+    ):
+        self.destination_dir = Path(destination_dir)
+        self.destination_dir.mkdir(parents=True, exist_ok=True)
+        self.keep_last_n_steps = keep_last_n_steps
+        self.keep_local_completed = max(keep_local_completed, 0)
+        self._queue = queue.Queue()
+        self._lock = threading.Lock()
+        self._errors = []
+        self._completed_local = []
+        self._copy_seconds = 0.0
+        self._files_copied = 0
+        self._bytes_copied = 0
+        self._max_queue_depth = 0
+        self._closed = False
+        self._worker = threading.Thread(
+            target=self._run, name="checkpoint-drive-copy", daemon=True
+        )
+        self._worker.start()
+        atexit.register(self._shutdown_at_exit)
+
+    def submit(self, source: Path) -> None:
+        if self._closed:
+            raise RuntimeError("checkpoint copier is closed")
+        self.raise_if_failed()
+        source = Path(source)
+        self._queue.put(source)
+        with self._lock:
+            self._max_queue_depth = max(
+                self._max_queue_depth, self._queue.qsize()
+            )
+        print(
+            f"[CHECKPOINT COPY] queued={source.name} "
+            f"pending={self._queue.unfinished_tasks}"
+        )
+
+    def _run(self) -> None:
+        while True:
+            source = self._queue.get()
+            if source is None:
+                self._queue.task_done()
+                return
+            started = time.perf_counter()
+            destination = self.destination_dir / source.name
+            temporary = destination.with_name(destination.name + ".tmp")
+            try:
+                shutil.copy2(source, temporary)
+                temporary.replace(destination)
+                seconds = time.perf_counter() - started
+                size = destination.stat().st_size
+                with self._lock:
+                    self._copy_seconds += seconds
+                    self._files_copied += 1
+                    self._bytes_copied += size
+                    if source.name.startswith("step_"):
+                        self._completed_local.append(source)
+                print(
+                    f"[CHECKPOINT COPY] complete={destination.name} "
+                    f"copy={seconds:.2f}s size={size / (1024**2):.1f}MiB"
+                )
+                rotate_step_checkpoints(
+                    self.destination_dir, self.keep_last_n_steps
+                )
+                self._rotate_completed_local()
+            except Exception as error:  # noqa: BLE001
+                temporary.unlink(missing_ok=True)
+                with self._lock:
+                    self._errors.append((source, error))
+                print(f"[CHECKPOINT COPY] failed={source.name} error={error}")
+            finally:
+                self._queue.task_done()
+
+    def _rotate_completed_local(self) -> None:
+        with self._lock:
+            completed = list(self._completed_local)
+            keep = self.keep_local_completed
+            removable = completed[:-keep] if keep else completed
+            self._completed_local = completed[-keep:] if keep else []
+        for path in removable:
+            if path.name.startswith("step_"):
+                path.unlink(missing_ok=True)
+
+    def raise_if_failed(self) -> None:
+        with self._lock:
+            errors = list(self._errors)
+        if errors:
+            source, error = errors[0]
+            raise RuntimeError(
+                f"asynchronous checkpoint copy failed for {source}: {error}"
+            ) from error
+
+    def flush(self) -> None:
+        pending = self._queue.unfinished_tasks
+        if pending:
+            print(f"[CHECKPOINT COPY] flushing pending={pending}")
+        self._queue.join()
+        self.raise_if_failed()
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "enabled": True,
+                "files_copied": self._files_copied,
+                "bytes_copied": self._bytes_copied,
+                "copy_seconds": self._copy_seconds,
+                "max_queue_depth": self._max_queue_depth,
+                "pending": self._queue.unfinished_tasks,
+                "errors": [str(error) for _, error in self._errors],
+            }
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        failure = None
+        try:
+            self.flush()
+        except RuntimeError as error:
+            failure = error
+        finally:
+            self._closed = True
+            self._queue.put(None)
+            self._queue.join()
+            self._worker.join()
+            atexit.unregister(self._shutdown_at_exit)
+        if failure is not None:
+            raise failure
+
+    def _shutdown_at_exit(self) -> None:
+        if self._closed:
+            return
+        pending = self._queue.unfinished_tasks
+        print(f"[CHECKPOINT COPY] process-exit flush pending={pending}")
+        try:
+            self.close()
+        except Exception as error:  # noqa: BLE001
+            print(f"[CHECKPOINT COPY] process-exit failure={error}", file=sys.stderr)
 
 repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
@@ -833,6 +981,7 @@ def save_checkpoint(
     phase4_steps: int = 0,
     phase5_steps: int = 0,
     scaler=None,
+    async_copier: AsyncCheckpointCopier = None,
 ):
     payload = {
         "step": step,
@@ -852,8 +1001,12 @@ def save_checkpoint(
     if scaler is not None and scaler.is_enabled():
         payload["scaler_state"] = scaler.state_dict()
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(payload, path)
+    temporary = Path(path).with_name(Path(path).name + ".tmp")
+    torch.save(payload, temporary)
+    temporary.replace(path)
     print(f"  → Saved: {path}")
+    if async_copier is not None:
+        async_copier.submit(path)
 
 
 def rotate_step_checkpoints(ckpt_dir: Path, keep_last_n: int) -> None:
@@ -984,11 +1137,18 @@ def _cycle_batches(dataset):
             yield b
 
 
-def _timed_dataset_build(label: str, builder, *args, **kwargs):
+def _timed_dataset_build(
+    label: str, builder, *args, wall_metrics: dict = None, **kwargs
+):
     """Build a dataset and report wall time, including cache load/tokenization."""
     started = time.perf_counter()
     dataset = builder(*args, **kwargs)
-    print(f"[DATASET] {label}  build={time.perf_counter() - started:.2f}s")
+    seconds = time.perf_counter() - started
+    print(f"[DATASET] {label}  build={seconds:.2f}s")
+    if wall_metrics is not None:
+        wall_metrics["dataset_builds"].append(
+            {"label": label, "seconds": seconds}
+        )
     return dataset
 
 
@@ -1014,7 +1174,10 @@ def run_phase(
     resume_path: str = None,
     replay_dataset=None,
     act_anchor_step: int = 0,
+    async_copier: AsyncCheckpointCopier = None,
+    wall_metrics: dict = None,
 ) -> int:
+    phase_started = time.perf_counter()
     total_loss = 0.0
     total_ce   = 0.0
     total_aux  = 0.0
@@ -1025,6 +1188,8 @@ def run_phase(
     t0 = time.time()
     perf_window_start = time.perf_counter()
     data_wait_seconds = 0.0
+    phase_data_wait_seconds = 0.0
+    phase_optimizer_seconds = 0.0
 
     # loop curriculum モード解決
     phase_idx = _phase_idx_from_name(phase_name)
@@ -1103,7 +1268,9 @@ def run_phase(
                 batch = next(data_iter)
             except StopIteration:
                 break
-            data_wait_seconds += time.perf_counter() - wait_start
+            waited = time.perf_counter() - wait_start
+            data_wait_seconds += waited
+            phase_data_wait_seconds += waited
             if step >= total_steps:
                 break
 
@@ -1186,6 +1353,7 @@ def run_phase(
                 continue  # keep accumulating micro-batch gradients
 
             # ── Optimizer update (once per grad_accum micro-batches) ───────
+            optimizer_started = time.perf_counter()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             scaler.step(optimizer)
@@ -1193,6 +1361,7 @@ def run_phase(
             optimizer.zero_grad(set_to_none=True)
             model.update_moe_router_bias()
             scheduler.step()
+            phase_optimizer_seconds += time.perf_counter() - optimizer_started
             step += 1
 
             if step % args.log_every == 0:
@@ -1245,12 +1414,23 @@ def run_phase(
                     phase1_steps=phase1_steps, phase2_steps=phase2_steps,
                     phase3_steps=phase3_steps, phase4_steps=phase4_steps,
                     phase5_steps=phase5_steps, scaler=scaler,
+                    async_copier=async_copier,
                 )
+                serialize_seconds = time.perf_counter() - save_started
                 print(
                     f"[CHECKPOINT] step {step:6d}  "
-                    f"save={time.perf_counter() - save_started:.2f}s"
+                    f"serialize={serialize_seconds:.2f}s"
                 )
-                rotate_step_checkpoints(ckpt_dir, args.keep_last_n_steps)
+                if wall_metrics is not None:
+                    wall_metrics["checkpoint_serializations"].append(
+                        {
+                            "name": f"step_{step:06d}.pt",
+                            "seconds": serialize_seconds,
+                            "phase": phase_name,
+                        }
+                    )
+                if async_copier is None:
+                    rotate_step_checkpoints(ckpt_dir, args.keep_last_n_steps)
 
     final_path = ckpt_dir / phase_final_name
     save_started = time.perf_counter()
@@ -1259,13 +1439,61 @@ def run_phase(
         phase1_steps=phase1_steps, phase2_steps=phase2_steps,
         phase3_steps=phase3_steps, phase4_steps=phase4_steps,
         phase5_steps=phase5_steps, scaler=scaler,
+        async_copier=async_copier,
     )
+    serialize_seconds = time.perf_counter() - save_started
     print(
         f"[CHECKPOINT] phase-final step {step:6d}  "
-        f"save={time.perf_counter() - save_started:.2f}s"
+        f"serialize={serialize_seconds:.2f}s"
+    )
+    if wall_metrics is not None:
+        wall_metrics["checkpoint_serializations"].append(
+            {
+                "name": phase_final_name,
+                "seconds": serialize_seconds,
+                "phase": phase_name,
+            }
+        )
+    if async_copier is not None:
+        async_copier.flush()
+    phase_seconds = time.perf_counter() - phase_started
+    tokens_processed = (
+        (step - start_step) * args.batch_size * grad_accum * args.seq_len
+    )
+    if wall_metrics is not None:
+        wall_metrics["phases"].append(
+            {
+                "name": phase_name,
+                "start_step": start_step,
+                "end_step": step,
+                "wall_seconds": phase_seconds,
+                "data_wait_seconds": phase_data_wait_seconds,
+                "optimizer_seconds": phase_optimizer_seconds,
+                "tokens_processed": tokens_processed,
+                "effective_tokens_per_second": (
+                    tokens_processed / max(phase_seconds, 1e-9)
+                ),
+            }
+        )
+    print(
+        f"[WALL CLOCK] phase={phase_name} wall={phase_seconds:.2f}s "
+        f"data_wait={phase_data_wait_seconds:.2f}s "
+        f"optimizer={phase_optimizer_seconds:.2f}s "
+        f"effective_tok_s={tokens_processed / max(phase_seconds, 1e-9):.1f}"
     )
     print(f"\n{phase_name} complete. Checkpoint: {final_path}\n")
     return step, scaler
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1273,6 +1501,13 @@ def run_phase(
 # ──────────────────────────────────────────────────────────────
 
 def train(args: argparse.Namespace) -> None:
+    process_started = time.perf_counter()
+    wall_metrics = {
+        "started_at": datetime.datetime.now().isoformat(),
+        "dataset_builds": [],
+        "phases": [],
+        "checkpoint_serializations": [],
+    }
     # 学習全体の RNG seed を起動直後に固定。
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -1289,10 +1524,25 @@ def train(args: argparse.Namespace) -> None:
 
     ckpt_dir = Path(args.ckpt_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_write_dir = (
+        Path(args.local_ckpt_dir) if args.local_ckpt_dir else ckpt_dir
+    )
+    checkpoint_write_dir.mkdir(parents=True, exist_ok=True)
+    async_copier = None
+    if checkpoint_write_dir.resolve() != ckpt_dir.resolve():
+        async_copier = AsyncCheckpointCopier(
+            ckpt_dir,
+            keep_last_n_steps=args.keep_last_n_steps,
+            keep_local_completed=args.keep_local_completed,
+        )
 
     log_path = Path(args.log_file) if args.log_file else ckpt_dir / "train.log"
     tee = _Tee(log_path)
     print(f"Logging to: {log_path}")
+    print(
+        f"Checkpoint write: {checkpoint_write_dir}  durable: {ckpt_dir}  "
+        f"async_copy={str(async_copier is not None).lower()}"
+    )
     print(f"Device: {device}  dtype: {amp_dtype}")
     print(
         f"Runtime: python={sys.version.split()[0]}  torch={torch.__version__}  "
@@ -1441,17 +1691,19 @@ def train(args: argparse.Namespace) -> None:
         ds1 = _timed_dataset_build(
             "phase1-wikitext103", build_wikitext103,
             cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+            wall_metrics=wall_metrics,
         )
         step, last_scaler = run_phase(
             phase_name="Phase1-WikiText103",
             dataset=ds1,
             model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
-            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p1_total,
+            args=args, ckpt_dir=checkpoint_write_dir, start_step=step, total_steps=p1_total,
             phase_final_name="phase1_final.pt", device=device, amp_dtype=amp_dtype,
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
             act_anchor_step=act_anchor_step,
+            async_copier=async_copier, wall_metrics=wall_metrics,
         )
         if args.replay_ratio > 0:
             replay_ds = ds1  # 一般言語アンカーを再利用（WikiText を二重に保持しない）
@@ -1463,6 +1715,7 @@ def train(args: argparse.Namespace) -> None:
         replay_ds = _timed_dataset_build(
             "replay-wikitext103", build_wikitext103,
             cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+            wall_metrics=wall_metrics,
         )
 
     # ── Phase 2: Reasoning mix (OpenWebMath + Orca Math [+ Dolly]) ──────────
@@ -1476,18 +1729,20 @@ def train(args: argparse.Namespace) -> None:
             orca_ratio=args.phase2_orca_ratio,
             include_dolly=args.include_dolly,
             dolly_rows=args.phase2_dolly_rows,
+            wall_metrics=wall_metrics,
         )
         step, last_scaler = run_phase(
             phase_name="Phase2-ReasoningMix",
             dataset=ds2,
             model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
-            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p2_total,
+            args=args, ckpt_dir=checkpoint_write_dir, start_step=step, total_steps=p2_total,
             phase_final_name="phase2_final.pt", device=device, amp_dtype=amp_dtype,
             replay_dataset=replay_ds,
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
             act_anchor_step=act_anchor_step,
+            async_copier=async_copier, wall_metrics=wall_metrics,
         )
 
     # ── Phase 3: Finance domain mix (financial-news + finance-alpaca) ───────
@@ -1496,18 +1751,20 @@ def train(args: argparse.Namespace) -> None:
         ds3 = _timed_dataset_build(
             "phase3-finance-domain", build_finance_domain_mix,
             cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+            wall_metrics=wall_metrics,
         )
         step, last_scaler = run_phase(
             phase_name="Phase3-FinanceDomain",
             dataset=ds3,
             model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
-            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p3_total,
+            args=args, ckpt_dir=checkpoint_write_dir, start_step=step, total_steps=p3_total,
             phase_final_name="phase3_final.pt", device=device, amp_dtype=amp_dtype,
             replay_dataset=replay_ds,
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
             act_anchor_step=act_anchor_step,
+            async_copier=async_copier, wall_metrics=wall_metrics,
         )
 
     # ── Phase 4: Trading methodology SFT (forecaster + sentiment) ─
@@ -1516,18 +1773,20 @@ def train(args: argparse.Namespace) -> None:
         ds4 = _timed_dataset_build(
             "phase4-trading-methodology", build_trading_methodology_sft,
             cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+            wall_metrics=wall_metrics,
         )
         step, last_scaler = run_phase(
             phase_name="Phase4-TradingMethodology",
             dataset=ds4,
             model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
-            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p4_total,
+            args=args, ckpt_dir=checkpoint_write_dir, start_step=step, total_steps=p4_total,
             phase_final_name="phase4_final.pt", device=device, amp_dtype=amp_dtype,
             replay_dataset=replay_ds,
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
             act_anchor_step=act_anchor_step,
+            async_copier=async_copier, wall_metrics=wall_metrics,
         )
 
     # ── Phase 5: Trading discipline / risk-management QA ─────────
@@ -1536,29 +1795,78 @@ def train(args: argparse.Namespace) -> None:
         ds5 = _timed_dataset_build(
             "phase5-trading-qa", build_trading_qa,
             cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+            wall_metrics=wall_metrics,
         )
         step, last_scaler = run_phase(
             phase_name="Phase5-TradingQA",
             dataset=ds5,
             model=model, cfg=cfg, optimizer=optimizer, scheduler=scheduler,
-            args=args, ckpt_dir=ckpt_dir, start_step=step, total_steps=p5_total,
+            args=args, ckpt_dir=checkpoint_write_dir, start_step=step, total_steps=p5_total,
             phase_final_name="phase5_final.pt", device=device, amp_dtype=amp_dtype,
             replay_dataset=replay_ds,
             phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
             phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
             phase5_steps=args.phase5_steps, resume_path=resume_path,
             act_anchor_step=act_anchor_step,
+            async_copier=async_copier, wall_metrics=wall_metrics,
         )
 
     # ── Final checkpoint ──────────────────────────────────────
-    final_path = ckpt_dir / "final.pt"
+    final_path = checkpoint_write_dir / "final.pt"
+    final_save_started = time.perf_counter()
     save_checkpoint(
         final_path, step, model, optimizer, scheduler, cfg, tag="finance_final",
         phase1_steps=args.phase1_steps, phase2_steps=args.phase2_steps,
         phase3_steps=args.phase3_steps, phase4_steps=args.phase4_steps,
         phase5_steps=args.phase5_steps, scaler=last_scaler,
+        async_copier=async_copier,
     )
-    print(f"All done. Final model: {final_path}")
+    final_serialize_seconds = time.perf_counter() - final_save_started
+    print(
+        f"[CHECKPOINT] final step {step:6d}  "
+        f"serialize={final_serialize_seconds:.2f}s"
+    )
+    wall_metrics["checkpoint_serializations"].append(
+        {
+            "name": "final.pt",
+            "seconds": final_serialize_seconds,
+            "phase": "finance_final",
+        }
+    )
+    if async_copier is not None:
+        async_copier.close()
+        async_stats = async_copier.stats()
+    else:
+        async_stats = {"enabled": False}
+    wall_metrics.update(
+        {
+            "completed_at": datetime.datetime.now().isoformat(),
+            "total_wall_seconds": time.perf_counter() - process_started,
+            "durable_ckpt_dir": str(ckpt_dir),
+            "checkpoint_write_dir": str(checkpoint_write_dir),
+            "async_checkpoint_copy": async_stats,
+            "runtime": {
+                "python": sys.version.split()[0],
+                "torch": torch.__version__,
+                "cuda": torch.version.cuda,
+                "device": str(device),
+                "dtype": str(amp_dtype),
+                "grouped_moe": grouped_moe_requested,
+                "compile": bool(args.compile),
+            },
+        }
+    )
+    summary_path = (
+        Path(args.wall_clock_json)
+        if args.wall_clock_json
+        else ckpt_dir / f"wall_clock_phase{args.phase}.json"
+    )
+    _write_json_atomic(summary_path, wall_metrics)
+    print(
+        f"[WALL CLOCK] total={wall_metrics['total_wall_seconds']:.2f}s "
+        f"summary={summary_path}"
+    )
+    print(f"All done. Final model: {ckpt_dir / 'final.pt'}")
     tee.close()
 
 
@@ -1610,6 +1918,9 @@ def parse_args() -> argparse.Namespace:
                    help="Directory for cached tokenised tensors")
     p.add_argument("--ckpt_dir",      type=str,   default="checkpoints/finance_a100_v2",
                    help="Output checkpoint directory")
+    p.add_argument("--local_ckpt_dir", type=str, default=None,
+                   help="Optional fast local directory for atomic checkpoint writes. "
+                        "Files are copied asynchronously to --ckpt_dir.")
     p.add_argument("--allow_unsafe_checkpoint", action="store_true",
                    help="Allow weights_only=False when loading checkpoints (pickle-based; "
                         "only use with checkpoints you created yourself)")
@@ -1632,8 +1943,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--keep_last_n_steps", type=int, default=3,
                    help="step_*.pt の保持世代数。古いものは保存時に自動削除。"
                         "phaseN_final.pt/final.pt は対象外。0以下で無効化(無制限保持)")
+    p.add_argument("--keep_local_completed", type=int, default=1,
+                   help="Number of successfully copied local step checkpoints to retain")
     p.add_argument("--log_file",      type=str,   default=None,
                    help="Path for the training log file (default: <ckpt_dir>/train.log)")
+    p.add_argument("--wall_clock_json", type=str, default=None,
+                   help="Wall-clock metrics JSON path (default: "
+                        "<ckpt_dir>/wall_clock_phaseN.json)")
 
     # Resume
     p.add_argument("--resume",        type=str,   default=None,
@@ -1712,6 +2028,11 @@ def parse_args() -> argparse.Namespace:
         p.error(f"--grad_accum_steps must be >= 1 (got {args.grad_accum_steps})")
     if args.ce_chunk_size < 0:
         p.error(f"--ce_chunk_size must be >= 0 (got {args.ce_chunk_size})")
+    if args.keep_local_completed < 0:
+        p.error(
+            "--keep_local_completed must be >= 0 "
+            f"(got {args.keep_local_completed})"
+        )
     if args.loop_schedule == "curriculum":
         if args.loop_tail_max < 1:
             p.error(f"--loop_tail_max must be >= 1 (got {args.loop_tail_max})")

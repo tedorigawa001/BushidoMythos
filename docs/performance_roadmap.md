@@ -12,8 +12,9 @@
 - 生成時の最終位置だけの語彙projection
 - recurrent loopのgradient checkpointing
 - CUDA AMP（float16/bfloat16）、8-bit AdamW、`torch.compile`
-- ACT curriculumのcompile-safe tensor buffer（CUDA wall-clock実測は未完了）
-- dataset build、batch wait、checkpoint save時間の学習ログ
+- ACT curriculumのcompile-safe tensor buffer（A100定常計測済み、総wall-clock計測待ち）
+- dataset build、batch wait、optimizer、checkpoint save、総wall-clockの学習ログとJSON
+- ColabローカルNVMeへのatomic checkpoint保存と単一workerによる非同期Driveコピー
 - GQAとMLAによるKV cache圧縮
 
 最適化前後の比較では、同じcheckpoint、入力、loop数、dtype、deviceを使用します。速度だけでなく、logits一致、損失、perplexity、生成品質も確認します。
@@ -46,7 +47,7 @@
 | P3 | GPU向け低ビット推論 | 配布・推論 | 重みメモリと帯域削減 | 高 |
 | P3（条件付き） | MLA latent-native decode | 長文脈推論 | 長いdecodeでのKV復元計算を削減 | 高 |
 
-## P0: CUDAベンチマーク基盤（ハーネス実装済み・CUDA実行待ち）
+## P0: CUDAベンチマーク基盤（ハーネス実装・A100定常計測済み）
 
 最初に、変更前後を同じ条件で比較できるハーネスを用意します。CPU結果からCUDA性能やVRAMを外挿しません。
 
@@ -98,19 +99,21 @@ compile回数、学習tokens/sec、loss、平均loop数、resume後のcurriculum
 
 実装ではbufferを非永続としてcheckpoint schemaを維持し、`cfg`値をログ互換用に同期します。Python 3.9/PyTorch 2.2のDynamo counterではbuffer更新後の追加compileが発生せず、A100の定常計測でも計測区間の追加graphは0でした。次は実際のphaseログで、dataset、optimizer、checkpoint I/Oを含む総wall-clock効果を確認します。
 
-## P1: ローカルcheckpoint保存と非同期Driveコピー
+## P1: ローカルcheckpoint保存と非同期Driveコピー（実装済み・本番計測待ち）
 
 ColabのDriveへ大きなcheckpointを直接、頻繁に保存すると、serializeとnetwork filesystem書き込みの間に学習が停止します。
 
-改善案:
+実装:
 
 1. checkpointをColabローカルNVMeへatomic saveする。
 2. 学習プロセスを止めず、完了済みファイルを別workerでDriveへcopyする。
-3. 同時copyは1件に制限し、古い中間checkpointを追い越した場合の扱いを決める。
+3. copy workerは1本に制限し、投入順を維持する。Drive側の古い中間checkpointはcopy完了後にrotationする。
 4. phase final checkpointはDriveへのcopy完了を確認してからphase完了とする。
-5. session切断時の未同期ファイルをログへ明示する。
+5. queue投入、pending数、copy完了時間、失敗理由を必ずログへ出す。copy失敗は次の投入またはflushで学習プロセスへ伝播させる。
 
-ローカル保存時間、Drive copy時間、学習停止時間、復元可能性を別々に計測します。非同期化で耐障害性を落とさないことを合格条件にします。
+`--local_ckpt_dir /content/checkpoints/<run>`を指定した場合だけ非同期経路を有効にし、`--ckpt_dir`はresume元かつ耐久保存先のまま維持します。`wall_clock_phaseN.json`にはphase/総wall-clock、dataset build、data wait、optimizer、serialize、copy累計、最大queue深度を保存します。hard runtime lossではpending中のローカルファイルを失うため、phase finalのflushとDrive上の直近periodic checkpointを耐障害性の境界とします。
+
+次の本番runで、直接Drive保存との総wall-clock差、foreground serialize時間、background copy時間、最大queue深度、Driveからのresumeを確認します。`max_queue_depth`が継続的に増える場合は保存間隔またはcheckpointサイズを見直します。
 
 ## P1: MoE grouped GEMM
 
@@ -256,7 +259,7 @@ MLAのprojection行列をquery側とoutput側へ吸収し、圧縮latentのま�
 3. A100でACT+compileの総wall-clock効果を測る。
 4. Fused Linear Cross Entropyをtraining script限定で導入する。
 5. MoE grouped GEMMをfallback付きで導入する。
-6. checkpointのローカル保存と非同期Drive copyを導入する。
+6. checkpointのローカル保存と非同期Drive copyを本番計測し、Drive resumeを検証する。
 7. native GQAとfused optimizerを環境別に評価する。
 8. 単一GPUの結果を基準に、分散学習とGPU量子化へ進む。
 9. 長文脈サービングを採用した場合のみ、MLA latent-native decodeを再評価する。

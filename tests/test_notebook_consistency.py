@@ -65,6 +65,7 @@ class TestRequiredFlags:
         "--dtype",
         "--save_every",
         "--log_file",
+        "--local_ckpt_dir",
     ])
     def test_flag_present_in_all_training_cells(self, flag):
         missing = [i for i, src in enumerate(self.cells) if flag not in src]

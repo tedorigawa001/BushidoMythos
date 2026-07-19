@@ -26,6 +26,7 @@ repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
 from training.finance_pretrain import (
+    AsyncCheckpointCopier,
     TextDataset,
     SFTDataset,
     _CACHE_VERSION,
@@ -42,6 +43,7 @@ from training.finance_pretrain import (
     validate_act_curriculum_args,
     rotate_step_checkpoints,
 )
+import training.finance_pretrain as finance_pretrain
 from chat import find_latest_ckpt
 from bushido_mythos import MythosConfig, BushidoMythos
 
@@ -206,6 +208,7 @@ class TestCheckpoint:
                         scheduler=self.scheduler, cfg=self.cfg)
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         assert "scheduler_state" in ckpt
+        assert not (tmp_path / "ckpt.pt.tmp").exists()
 
     def test_save_includes_phase_steps(self, tmp_path):
         path = tmp_path / "ckpt.pt"
@@ -340,6 +343,87 @@ class TestRotateStepCheckpoints:
         assert (tmp_path / "phase1_final.pt").exists()
         assert (tmp_path / "final.pt").exists()
         assert len(list(tmp_path.glob("step_*.pt"))) == 1
+
+
+class TestAsyncCheckpointCopier:
+    def test_copies_atomically_and_reports_stats(self, tmp_path):
+        local = tmp_path / "local"
+        durable = tmp_path / "drive"
+        local.mkdir()
+        source = local / "step_001000.pt"
+        source.write_bytes(b"checkpoint")
+        copier = AsyncCheckpointCopier(durable, keep_last_n_steps=3)
+        copier.submit(source)
+        copier.close()
+
+        assert (durable / source.name).read_bytes() == b"checkpoint"
+        assert not (durable / f"{source.name}.tmp").exists()
+        stats = copier.stats()
+        assert stats["files_copied"] == 1
+        assert stats["bytes_copied"] == len(b"checkpoint")
+        assert stats["pending"] == 0
+        assert stats["errors"] == []
+
+    def test_copy_failure_is_raised_on_flush(self, tmp_path, monkeypatch):
+        source = tmp_path / "step_001000.pt"
+        source.write_bytes(b"checkpoint")
+        copier = AsyncCheckpointCopier(tmp_path / "drive")
+
+        def fail_copy(*args, **kwargs):
+            raise OSError("drive unavailable")
+
+        monkeypatch.setattr(finance_pretrain.shutil, "copy2", fail_copy)
+        copier.submit(source)
+        with pytest.raises(RuntimeError, match="drive unavailable"):
+            copier.close()
+
+    def test_save_checkpoint_enqueues_durable_copy(self, tmp_path):
+        cfg = tiny_cfg()
+        model, optimizer, scheduler = make_model_and_opt(cfg)
+        local = tmp_path / "local"
+        durable = tmp_path / "drive"
+        copier = AsyncCheckpointCopier(durable)
+        path = local / "step_000005.pt"
+        save_checkpoint(
+            path,
+            step=5,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            cfg=cfg,
+            async_copier=copier,
+        )
+        copier.close()
+        copied = torch.load(
+            durable / path.name, map_location="cpu", weights_only=False
+        )
+        assert copied["step"] == 5
+
+    def test_rotates_only_successfully_copied_periodic_files(self, tmp_path):
+        local = tmp_path / "local"
+        durable = tmp_path / "drive"
+        local.mkdir()
+        copier = AsyncCheckpointCopier(
+            durable, keep_last_n_steps=2, keep_local_completed=1
+        )
+        for step in (1000, 2000, 3000):
+            source = local / f"step_{step:06d}.pt"
+            source.write_bytes(str(step).encode())
+            copier.submit(source)
+        phase_final = local / "phase1_final.pt"
+        phase_final.write_bytes(b"final")
+        copier.submit(phase_final)
+        copier.close()
+
+        assert sorted(path.name for path in durable.glob("step_*.pt")) == [
+            "step_002000.pt",
+            "step_003000.pt",
+        ]
+        assert (durable / "phase1_final.pt").exists()
+        assert not (local / "step_001000.pt").exists()
+        assert not (local / "step_002000.pt").exists()
+        assert (local / "step_003000.pt").exists()
+        assert phase_final.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +782,7 @@ class TestMemoryReplay:
         return [(torch.full((2, 8), fill, dtype=torch.long),
                  torch.full((2, 8), fill, dtype=torch.long)) for _ in range(n)]
 
-    def _run(self, replay_ratio):
+    def _run(self, replay_ratio, wall_metrics=None):
         cfg = tiny_cfg()
         model, opt, sch = make_model_and_opt(cfg)
         seen = []
@@ -712,7 +796,7 @@ class TestMemoryReplay:
         tmp = Path(tempfile.mkdtemp())
         run_phase("Phase2-Test", current, model, cfg, opt, sch, self._args(replay_ratio),
                   tmp, 0, 4, "phase2_final.pt", torch.device("cpu"), torch.float32,
-                  replay_dataset=replay)
+                  replay_dataset=replay, wall_metrics=wall_metrics)
         return seen
 
     def test_cycle_batches_is_infinite(self):
@@ -730,6 +814,21 @@ class TestMemoryReplay:
     def test_replay_decision_is_deterministic_across_runs(self):
         # 同じ seed/step なら replay 判定系列が一致（resume 安全）
         assert self._run(0.5) == self._run(0.5)
+
+    def test_run_phase_records_wall_clock_breakdown(self):
+        metrics = {"phases": [], "checkpoint_serializations": []}
+        self._run(0.0, wall_metrics=metrics)
+
+        phase = metrics["phases"][0]
+        assert phase["name"] == "Phase2-Test"
+        assert phase["start_step"] == 0
+        assert phase["end_step"] == 4
+        assert phase["wall_seconds"] > 0
+        assert phase["data_wait_seconds"] >= 0
+        assert phase["optimizer_seconds"] >= 0
+        assert phase["tokens_processed"] == 4 * 2 * 8
+        assert phase["effective_tokens_per_second"] > 0
+        assert metrics["checkpoint_serializations"][0]["name"] == "phase2_final.pt"
 
 
 class TestMakeOptimizer:

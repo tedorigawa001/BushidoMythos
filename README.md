@@ -406,6 +406,7 @@ python3.9 training/finance_pretrain.py \
 python training/finance_pretrain.py \
   --base_ckpt /content/drive/<Drive path>/checkpoints/a100_v2_gpt2vocab/final.pt \
   --ckpt_dir  /content/drive/<Drive path>/checkpoints/finance_a100_v2 \
+  --local_ckpt_dir /content/checkpoints/finance_a100_v2 \
   --cache_dir /content/cache \
   --batch_size 64 --seq_len 1024 \
   --dtype auto --auto_resume
@@ -419,6 +420,9 @@ python training/finance_pretrain.py \
 |---|---|---|
 | `--base_ckpt` | `checkpoints/a100_v2_gpt2vocab/final.pt` | Starting checkpoint. If missing, the config can be borrowed from `--resume` |
 | `--ckpt_dir` | `checkpoints/finance_a100_v2` | Checkpoint output directory |
+| `--local_ckpt_dir` | unset | Write checkpoints atomically to this local directory, then copy them asynchronously to `--ckpt_dir`. Intended for Colab NVMe plus Drive |
+| `--keep_local_completed` | `1` | Number of successfully copied periodic `step_*.pt` files retained locally. Phase/final checkpoints are not removed |
+| `--wall_clock_json` | `<ckpt_dir>/wall_clock_phaseN.json` | Atomic JSON report for total/phase wall-clock, dataset build, data wait, optimizer, checkpoint serialization, and asynchronous copy metrics |
 | `--phase` | `0` | `0` = all phases / `1` to `5` = one phase only |
 | `--phase1_steps` | `20000` | Phase 1 step count |
 | `--phase2_steps` | `8000` | Phase 2 step count for reasoning reinforcement |
@@ -452,7 +456,7 @@ python training/finance_pretrain.py \
 | `--save_every` | `2000` | Checkpoint interval in steps |
 | `--keep_last_n_steps` | `3` | Keep only the last N `step_*.pt` checkpoints in `--ckpt_dir`; older ones are deleted automatically right after each save to bound disk usage. Does not touch `phaseN_final.pt`/`final.pt`. `<= 0` disables rotation (keep all) |
 
-Checkpoints save `scheduler_state`, `scaler_state` for float16 training, and phase metadata, so interrupted runs can resume with the same schedule. A phase is skipped automatically if the current step has already passed its endpoint.
+Checkpoints save `scheduler_state`, `scaler_state` for float16 training, and phase metadata, so interrupted runs can resume with the same schedule. A phase is skipped automatically if the current step has already passed its endpoint. With `--local_ckpt_dir`, one background worker copies completed local files to `--ckpt_dir` through a temporary file and atomic rename. Periodic copies may overlap training; every phase-final checkpoint is flushed to the durable directory before the phase is reported complete. The log prints queue depth, serialization time, copy time, and copy failures. Normal process exit, `KeyboardInterrupt`, and uncaught Python exceptions flush pending copies through an exit hook. A hard Colab runtime loss can still discard files that were logged as pending.
 
 **Loop curriculum (`--loop_schedule curriculum`, experimental):**
 
@@ -592,7 +596,7 @@ This project assumes **Google Colab Pro+ with A100 recommended** for the full tr
 
 4. **Checkpoint output**
 
-   Checkpoints are saved on Drive so they survive session disconnects:
+   Checkpoints are first saved atomically under `/content/checkpoints/<run>` and copied asynchronously to Drive. Durable files on Drive survive session disconnects:
 
    ```text
    <Drive path>/checkpoints/finance_a100_v2/
@@ -609,6 +613,8 @@ This project assumes **Google Colab Pro+ with A100 recommended** for the full tr
    Each phase cell uses `--auto_resume` to resume from the latest `step_*.pt` on Drive. To resume explicitly from `phase*_final.pt`, pass `--resume`. After a session disconnect, rerun cells 1-2 and then rerun the phase cell that was interrupted.
 
    Only the last `KEEP_LAST_N_STEPS` (default 3, notebook GPU-settings cell) periodic `step_*.pt` checkpoints are kept on Drive — older ones are deleted automatically as new ones are saved, to bound Drive usage. `phaseN_final.pt`/`final.pt` are never rotated out.
+
+   Each run also writes `wall_clock_phaseN.json` on Drive. Use `total_wall_seconds` and each entry in `phases` for end-to-end comparisons; `checkpoint_serializations` and `async_checkpoint_copy.copy_seconds` separate foreground serialization from background Drive transfer.
 
 > **GPU selection guide:** A100 on Colab Pro+ is the best cost-performance option. T4 also works, but `--compile` is disabled and both batch size and sequence length are reduced, making training roughly 3-4x slower than A100.
 
