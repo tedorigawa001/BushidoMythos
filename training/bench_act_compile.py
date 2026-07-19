@@ -38,6 +38,10 @@ class BenchResult:
     peak_memory_mb: float
     first_loss: float
     last_loss: float
+    warmup_unique_graphs: int
+    warmup_graph_breaks: int
+    measured_unique_graphs: int
+    measured_graph_breaks: int
     unique_graphs: int
     graph_breaks: int
 
@@ -161,6 +165,9 @@ def _benchmark_mode(
         run_step(index, x, y)
 
     _sync(device)
+    warmup_graphs, warmup_breaks = (
+        _dynamo_counts() if compile_model else (0, 0)
+    )
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
 
@@ -175,6 +182,8 @@ def _benchmark_mode(
     if device.type == "cuda":
         peak_mb = torch.cuda.max_memory_allocated(device) / (1024 * 1024)
     unique_graphs, graph_breaks = _dynamo_counts() if compile_model else (0, 0)
+    measured_graphs = max(unique_graphs - warmup_graphs, 0)
+    measured_breaks = max(graph_breaks - warmup_breaks, 0)
     tokens = len(batches) * batches[0][0].numel()
     return BenchResult(
         mode="compile" if compile_model else "eager",
@@ -183,6 +192,10 @@ def _benchmark_mode(
         peak_memory_mb=peak_mb,
         first_loss=losses[0],
         last_loss=losses[-1],
+        warmup_unique_graphs=warmup_graphs,
+        warmup_graph_breaks=warmup_breaks,
+        measured_unique_graphs=measured_graphs,
+        measured_graph_breaks=measured_breaks,
         unique_graphs=unique_graphs,
         graph_breaks=graph_breaks,
     )
@@ -282,7 +295,10 @@ def main() -> None:
             f"{result.mode:>7}: {result.seconds:.3f}s  "
             f"{result.tokens_per_second:.1f} tok/s  "
             f"peak={result.peak_memory_mb:.1f} MiB  "
-            f"graphs={result.unique_graphs} breaks={result.graph_breaks}"
+            f"graphs={result.unique_graphs} "
+            f"(warmup={result.warmup_unique_graphs}, measured={result.measured_unique_graphs})  "
+            f"breaks={result.graph_breaks} "
+            f"(warmup={result.warmup_graph_breaks}, measured={result.measured_graph_breaks})"
         )
         del model
         gc.collect()

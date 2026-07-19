@@ -416,7 +416,7 @@ python training/finance_pretrain.py \
 | `--grad_accum_steps` | `1` | Gradient accumulation steps. Effective batch = `batch_size x grad_accum_steps` (`>= 1`) |
 | `--seq_len` | `1024` | Sequence length |
 | `--dtype` | `auto` | `auto` = bfloat16 on Ampere+ (A100), float16 on T4/V100, float32 on CPU/MPS |
-| `--compile` | `False` | Uses `torch.compile()` for roughly 20-40% speedup on Ampere+; unsupported environments are skipped automatically |
+| `--compile` | `False` | Uses `torch.compile()` on Ampere+; measured steady-state gain is about 7.5% for A100/batch 16/seq 256/8 loops with gradient checkpointing. Unsupported environments are skipped automatically |
 | `--grad_checkpoint` | `False` | Enable gradient checkpointing in the recurrent loop. Reduces activation memory in proportion to loop depth (larger effect with more loops) at the cost of ~30-40% extra compute |
 | `--optim8bit` | `False` | Use bitsandbytes 8-bit AdamW (optimizer states 8→2 bytes/param, near-lossless). Requires CUDA + `pip install bitsandbytes`; falls back to standard AdamW if unavailable. Resume must use the same setting (a mismatch resets optimizer state with a warning) |
 | `--mem_log_every` | `100` | Log VRAM stats (`alloc` / `reserved` / `peak` / `frag`) every N steps. Helps diagnose OOM root cause. `0` = disable |
@@ -464,17 +464,19 @@ Progress is measured from `--act_anchor_step`, not from absolute step 0 — this
 
 `--act_curriculum` can run with `--compile`. Dynamic `act_threshold` and ponder weight values are stored in non-persistent scalar tensor buffers and updated in place, so changing curriculum values does not create Python-float guards or alter the checkpoint schema. The training log also reports `data_wait`, dataset build time, runtime versions, and checkpoint save time for end-to-end bottleneck analysis. Design rationale, the anchor-step bug history, and measured results are in [`training/report/act_curriculum_design.md`](training/report/act_curriculum_design.md).
 
-Compare eager and compiled ACT training steps on a T4 before spending A100 time:
+Measure fully warmed eager and compiled ACT training steps under the production A100 batch shape:
 
 ```bash
 python3 training/bench_act_compile.py \
   --ckpt checkpoints/finance_a100_v2/phase1_final.pt \
-  --device cuda --dtype auto --steps 20 --warmup 3 \
-  --batch_size 1 --seq_len 256 --n_loops 8 --grad_checkpoint \
-  --json_out checkpoints/finance_a100_v2/bench_act_compile.json
+  --device cuda --dtype auto --steps 100 --warmup 100 \
+  --batch_size 16 --seq_len 256 --n_loops 8 --grad_checkpoint \
+  --json_out checkpoints/finance_a100_v2/bench_act_compile_steady.json
 ```
 
-The measured window excludes warmup/initial compilation. The report includes runtime versions, eager/compile throughput, peak VRAM, Dynamo unique graphs and graph breaks, plus the maximum loss delta.
+Using `warmup == steps` traverses the complete ACT threshold ramp once before timing it again. Reduce the batch size to 8 or 4 if the benchmark runs out of VRAM. Run the same condition three times and compare median throughput. The measured window excludes warmup, while the report records Dynamo graphs and graph breaks separately for warmup and measurement; non-zero `measured_unique_graphs` means the timed result still includes compilation. Runtime versions, eager/compile throughput, peak VRAM, and the maximum loss delta are also recorded.
+
+The A100 steady-state run completed three times with no graphs or graph breaks created during measurement. Median throughput increased from 35,360 to 38,054 tokens/sec (`1.075x`), while peak allocated VRAM decreased from 3,292 to 3,137 MiB. The maximum loss delta was `0.00154114`. This passes the 5% kernel-benchmark threshold; end-to-end phase timing remains the authority for total training-time savings.
 
 **VRAM diagnostics (`--mem_log_every`):**
 

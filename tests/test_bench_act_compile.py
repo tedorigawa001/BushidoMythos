@@ -36,6 +36,8 @@ def test_eager_benchmark_cpu_smoke():
     assert result.seconds > 0
     assert result.tokens_per_second > 0
     assert result.first_loss > 0
+    assert result.warmup_unique_graphs == 0
+    assert result.measured_unique_graphs == 0
 
 
 @pytest.mark.skipif(
@@ -63,4 +65,10 @@ def test_compile_eager_backend_cpu_smoke():
 
     assert result.mode == "compile"
     assert result.unique_graphs > 0
+    assert result.unique_graphs == (
+        result.warmup_unique_graphs + result.measured_unique_graphs
+    )
+    assert result.graph_breaks == (
+        result.warmup_graph_breaks + result.measured_graph_breaks
+    )
     assert result.first_loss > 0

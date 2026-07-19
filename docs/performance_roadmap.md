@@ -77,13 +77,15 @@
 
 合格条件は、品質指標が許容範囲内で、対象指標が複数回の中央値で改善することです。初回compileとdataset downloadはkernel benchmarkから除外しますが、end-to-end phase時間ではdataset準備、batch待ち、checkpoint保存を含めます。GPU utilizationが低い場合は、kernel最適化より入力・I/O側を先に改善します。
 
-`training/bench_act_compile.py`は同一checkpoint・乱数batch・ACTランプでeager/compileのforward/backwardを比較し、初回compileをwarmupへ分離します。JSONにはruntime、tokens/sec、peak VRAM、Dynamo graph数、graph break、loss差を保存します。通常学習側にはdataset build、`data_wait`、checkpoint save時間のログを実装済みです。GPU utilizationの外部計測とT4/A100実測が残っています。
+`training/bench_act_compile.py`は同一checkpoint・乱数batch・ACTランプでeager/compileのforward/backwardを比較し、初回compileをwarmupへ分離します。JSONにはruntime、tokens/sec、peak VRAM、loss差に加え、Dynamo graph数とgraph breakをwarmup区間・計測区間の別に保存します。計測区間の`measured_unique_graphs`が0でない結果は、残存compile時間を含むため定常速度とは扱いません。通常学習側にはdataset build、`data_wait`、checkpoint save時間のログを実装済みです。
 
-## P1: ACT curriculumとtorch.compileの両立（実装済み・CUDA計測待ち）
+A100での最初の予備計測（batch 1、steps 20、warmup 3、seq 256、8 loops、gradient checkpointing）はcompile 0.451倍でしたが、旧ハーネスではgraph生成時点を分離できず、定常速度を判定できませんでした。続く本番相当の再計測（batch 16、steps 100、warmup 100）は3回すべて計測区間の追加graph/breakが0でした。中央値はeager 35,360 tokens/sec、compile 38,054 tokens/sec（1.075倍）、peak VRAM 3292/3137 MiB、最大loss差0.00154114です。5%のkernel benchmark合格基準を満たしたため、対応A100 runではcompileを有効にします。ただし総wall-clock効果はoptimizer、data wait、checkpoint I/Oを含むphase時間で別途確認します。
+
+## P1: ACT curriculumとtorch.compileの両立（実装・A100定常計測済み）
 
 ### 優先理由
 
-現在の本番runはACT curriculumを使うため、`torch.compile`を全体で無効化しています。今後の本番runもACT有効を前提とするなら、個別kernelの改善より先にcompileを復帰させる方が、52k step全体のwall-clockへ広く効く可能性があります。従来想定されている1.3〜1.5倍の効果は未検証値として扱い、P0ハーネスで実測します。
+ACT curriculumを維持したまま`torch.compile`を本番runへ復帰できるようにし、個別kernelだけでなく52k step全体のforward/backwardへ効かせます。当初想定した1.3〜1.5倍には届かなかったものの、本番batch形状の定常計測で1.075倍を確認しました。
 
 ### 改善案
 
@@ -94,7 +96,7 @@
 
 compile回数、学習tokens/sec、loss、平均loop数、resume後のcurriculum位置を検証します。bufferをcheckpointへ保存するか、global stepから再計算するかも仕様として固定します。
 
-実装ではbufferを非永続としてcheckpoint schemaを維持し、`cfg`値をログ互換用に同期します。Python 3.9/PyTorch 2.2のDynamo compile counterでは、buffer更新後のforwardで追加compileが発生しないことを確認済みです。次はT4/A100で総wall-clockとgraph breakを測定します。
+実装ではbufferを非永続としてcheckpoint schemaを維持し、`cfg`値をログ互換用に同期します。Python 3.9/PyTorch 2.2のDynamo counterではbuffer更新後の追加compileが発生せず、A100の定常計測でも計測区間の追加graphは0でした。次は実際のphaseログで、dataset、optimizer、checkpoint I/Oを含む総wall-clock効果を確認します。
 
 ## P1: ローカルcheckpoint保存と非同期Driveコピー
 
