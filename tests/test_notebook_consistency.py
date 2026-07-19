@@ -86,6 +86,20 @@ class TestRequiredFlags:
                 f"Training cell {i} missing USE_GRAD_CHECKPOINT conditional"
             )
 
+    def test_grouped_moe_conditional_in_all_training_cells(self):
+        """Every training phase must apply the production grouped MoE switch."""
+        for i, src in enumerate(self.cells):
+            assert 'if GROUPED_MOE:' in src and 'cmd.append("--grouped_moe")' in src, (
+                f"Training cell {i} missing GROUPED_MOE conditional"
+            )
+
+    def test_subprocess_failure_propagates_in_all_training_cells(self):
+        """A failed training process must fail its Colab cell."""
+        for i, src in enumerate(self.cells):
+            assert "proc.check_returncode()" in src, (
+                f"Training cell {i} does not propagate subprocess failure"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Notebook structure tests
@@ -148,6 +162,13 @@ class TestNotebookStructure:
         has_inference = any("model.generate" in s or "chat(" in s
                             for s in sources)
         assert has_inference, "No inference/chat cell found"
+
+    def test_chat_grouped_benchmark_precedes_inference_section(self):
+        ids = [cell.get("id") for cell in self.nb["cells"]]
+        grouped_training = ids.index("run-grouped-moe-benchmark")
+        chat_benchmark = ids.index("run-chat-grouped-moe-benchmark")
+        inference = ids.index("section-chat")
+        assert grouped_training < chat_benchmark < inference
 
 
 if __name__ == "__main__":

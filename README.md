@@ -138,10 +138,24 @@ A new top-level script [`chat.py`](chat.py) provides an interactive REPL for tra
 - `--tokenizer auto / gpt2 / mythos`: tokenizer selection with verified GPT-2 loading (tests actual encoding before accepting the tokenizer)
 - Prompt truncation: left-side truncation keeps the most recent context when the prompt exceeds `max_seq_len - max_new_tokens`
 - `--rep_penalty`: repetition penalty (HuggingFace style)
+- `--grouped_moe`: opt-in native BF16 grouped MoE on CUDA SM80+; explicit requests fail instead of falling back silently
+- `--dtype`: keeps legacy FP32 by default; `--grouped_moe --dtype auto` selects BF16 autocast
 
 ```bash
 python chat.py --finance_mode --ckpt_dir checkpoints/finance_a100_v2 --temp 0.6 --top_k 40
 ```
+
+Batch-1 chat generation has a separate benchmark because training throughput does not predict incremental decode performance:
+
+```bash
+python3 training/bench_chat_grouped_moe.py \
+  --ckpt checkpoints/finance_a100_v2/phase5_final.pt \
+  --prompt_len 64 --max_new_tokens 32 --n_loops 4 \
+  --warmup 3 --repeats 5 \
+  --json_out checkpoints/finance_a100_v2/bench_chat_grouped_moe.json
+```
+
+On A100 with batch 1, prompt length 64, 32 generated tokens, and 4 recurrent loops, legacy produced 46.82 generated tokens/sec at 461.1 MiB peak allocation. Grouped MoE produced 37.51 tokens/sec at 547.9 MiB: **0.801x speedup (19.9% slower) and 86.8 MiB more memory**. Output token IDs matched exactly. The grouped path remains useful for training-sized token batches, but `chat.py` keeps legacy FP32 as the recommended default for interactive decode. `--grouped_moe` remains opt-in for future batched-serving measurements.
 
 #### Verified GPT-2 tokenizer loading (`colab_finance_train.ipynb`)
 
@@ -506,7 +520,7 @@ python3 training/bench_act_compile.py \
   --json_out checkpoints/finance_a100_v2/bench_act_compile_grouped_moe.json
 ```
 
-The implementation keeps existing expert parameters and state-dict keys, stacks them only for the grouped operation, and supplies a custom backward using grouped GEMMs for input and weight gradients. It uses the [PyTorch native grouped_mm API](https://docs.pytorch.org/docs/main/generated/torch.nn.functional.grouped_mm.html), which currently requires BF16 CUDA tensors on SM80 or newer. When `--grouped_moe` is specified, both benchmark and training print exactly one status line such as `[grouped_moe] requested=true active=true reason=active`; an inactive request exits immediately instead of silently measuring the legacy path. Before timing, the benchmark also checks native forward, input gradient, and weight gradient against non-square `F.linear` references. Each result records `grouped_moe_active`, and `config.grouped_moe_probe` records the maximum absolute deltas.
+The implementation keeps existing expert parameters and state-dict keys, stacks them only for the grouped operation, and supplies a custom backward using grouped GEMMs for input and weight gradients. It uses the [PyTorch native grouped_mm API](https://docs.pytorch.org/docs/main/generated/torch.nn.functional.grouped_mm.html), which currently requires BF16 CUDA tensors on SM80 or newer. The weight-gradient path zero-pads the final expert when needed to satisfy the native kernel's 16-byte row-stride requirement, so arbitrary token counts remain valid. When `--grouped_moe` is specified, both benchmark and training print exactly one status line such as `[grouped_moe] requested=true active=true reason=active`; an inactive request exits immediately instead of silently measuring the legacy path. Before timing, the benchmark also checks native forward, input gradient, and weight gradient against non-square `F.linear` references. Each result records `grouped_moe_active`, and `config.grouped_moe_probe` records the maximum absolute deltas. Checkpoints retain the unchanged model state schema and separately record `runtime_config.grouped_moe`; resume warns if the current execution mode differs.
 
 On A100 with batch 16, sequence 256, 8 loops, gradient checkpointing, and full-logits CE, the validated grouped run reached 75,903 compiled tokens/sec versus 37,564 for the matching legacy run: **2.021x throughput** and **50.5% less measured step time**. Compiled peak allocation increased by only 10 MiB (3,137 to 3,147 MiB). The numerical probe reported zero delta for output and both gradients; grouped versus legacy first-loss differences were 0.000130 eager and 0.000229 compiled. No graphs or breaks were created during measurement. Grouped MoE is therefore the preferred A100/PyTorch 2.11 training path when its runtime preflight succeeds.
 
@@ -622,6 +636,10 @@ python3.9 chat.py --ckpt_dir checkpoints/finance_a100_v2
 
 # Sampling adjustments
 python3.9 chat.py --temp 0.7 --top_k 40 --max_tokens 128 --loops 8
+
+# Experimental batched-serving check; batch-1 interactive chat is slower than legacy
+python3.9 chat.py --finance_mode --grouped_moe --dtype auto \
+  --ckpt checkpoints/finance_a100_v2/phase5_final.pt
 ```
 
 In **finance instruction mode** (`--finance_mode`), user input is converted automatically into:
@@ -646,6 +664,8 @@ Generation stops automatically when it reaches a line beginning with `### `, whi
 | `--max_tokens` | `64` | Maximum generated tokens |
 | `--loops` | `4` | Recurrent loop count at inference |
 | `--finance_mode` | off | Use the `### Instruction: / ### Response:` format |
+| `--dtype` | `auto` | Legacy path stays FP32; grouped MoE with `auto` uses BF16 autocast |
+| `--grouped_moe` | off | Require native BF16 grouped MoE on CUDA SM80+; inactive requests fail immediately |
 
 If the prompt exceeds `max_seq_len - max_tokens`, the left side is truncated and the most recent context is kept. `--tokenizer auto` selects the GPT-2 tokenizer automatically when `vocab_size == 50257`.
 

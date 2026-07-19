@@ -21,12 +21,16 @@ repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
 from chat import (
+    apply_grouped_moe,
     generate,
+    parse_args,
+    resolve_inference_dtype,
     _INSTRUCT_PREFIX,
     _INSTRUCT_RESPONSE,
     _INSTRUCT_STOP,
     _FINANCE_RISK_SUFFIX,
 )
+import chat
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +59,61 @@ def _make_mock_cfg(vocab_size=200, max_seq_len=128):
     cfg.vocab_size = vocab_size
     cfg.max_seq_len = max_seq_len
     return cfg
+
+
+class TestGroupedMoEChat:
+    def test_auto_dtype_preserves_legacy_float32(self):
+        assert resolve_inference_dtype(
+            torch.device("cuda"), "auto", grouped_moe=False
+        ) == torch.float32
+
+    def test_grouped_auto_dtype_selects_bfloat16(self):
+        assert resolve_inference_dtype(
+            torch.device("cuda"), "auto", grouped_moe=True
+        ) == torch.bfloat16
+
+    def test_auto_dtype_on_cpu_is_float32(self):
+        assert resolve_inference_dtype(
+            torch.device("cpu"), "auto", grouped_moe=False
+        ) == torch.float32
+
+    def test_explicit_bfloat16_on_cpu_is_rejected(self):
+        with pytest.raises(ValueError, match="only supported on CUDA"):
+            resolve_inference_dtype(
+                torch.device("cpu"), "bfloat16", grouped_moe=False
+            )
+
+    def test_grouped_request_activates_model(self, monkeypatch, capsys):
+        model = MagicMock()
+        model.set_grouped_moe.return_value = True
+        monkeypatch.setattr(
+            chat, "grouped_moe_runtime_status", lambda *_: (True, "active")
+        )
+        assert apply_grouped_moe(
+            model, True, torch.device("cuda"), torch.bfloat16
+        ) is True
+        model.set_grouped_moe.assert_called_once_with(True, torch.bfloat16)
+        assert "active=true reason=active" in capsys.readouterr().out
+
+    def test_grouped_request_fails_instead_of_falling_back(self, monkeypatch):
+        model = MagicMock()
+        monkeypatch.setattr(
+            chat,
+            "grouped_moe_runtime_status",
+            lambda *_: (False, "api_unavailable"),
+        )
+        with pytest.raises(RuntimeError, match="api_unavailable"):
+            apply_grouped_moe(
+                model, True, torch.device("cuda"), torch.bfloat16
+            )
+        model.set_grouped_moe.assert_not_called()
+
+    def test_mixed_int8_and_grouped_are_mutually_exclusive(self, monkeypatch):
+        monkeypatch.setattr(
+            sys, "argv", ["chat.py", "--mixed_int8", "--grouped_moe"]
+        )
+        with pytest.raises(SystemExit):
+            parse_args()
 
 
 # ---------------------------------------------------------------------------

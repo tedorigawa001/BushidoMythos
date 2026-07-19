@@ -783,6 +783,17 @@ def _strip_compile_prefix(state_dict: dict) -> dict:
     return state_dict
 
 
+def _runtime_config(model) -> dict:
+    """Return runtime-only execution settings that are absent from state_dict."""
+    target = getattr(model, "_orig_mod", model)
+    return {
+        "grouped_moe": any(
+            bool(getattr(module, "use_grouped_moe", False))
+            for module in target.modules()
+        )
+    }
+
+
 def _safe_torch_load(path: str, allow_unsafe: bool = False) -> dict:
     """Load a checkpoint with weights_only=True by default.
 
@@ -830,6 +841,7 @@ def save_checkpoint(
         "optimizer_type": type(optimizer).__name__,  # resume 時の不一致検出用
         "scheduler_state": scheduler.state_dict(),
         "cfg": cfg.__dict__,
+        "runtime_config": _runtime_config(model),
         "tag": tag,
         "phase1_steps": phase1_steps,
         "phase2_steps": phase2_steps,
@@ -900,6 +912,20 @@ def load_checkpoint(path: str, model, optimizer, scheduler, scaler=None, allow_u
     if skipped:
         print(f"  Skipping shape-mismatched keys: {skipped}")
     model.load_state_dict(filtered, strict=False)
+    saved_runtime = ckpt.get("runtime_config") or {}
+    saved_grouped_moe = saved_runtime.get("grouped_moe")
+    current_grouped_moe = _runtime_config(model)["grouped_moe"]
+    if (
+        saved_grouped_moe is not None
+        and bool(saved_grouped_moe) != current_grouped_moe
+    ):
+        print(
+            "  [warn] grouped_moe runtime setting mismatch "
+            f"(saved={str(bool(saved_grouped_moe)).lower()} / "
+            f"current={str(current_grouped_moe).lower()}). "
+            "Resume with the same --grouped_moe setting for reproducible "
+            "numerics and throughput."
+        )
     if "optimizer_state" in ckpt:
         # optimizer 種別が違う（例: fp32 AdamW ⇄ 8-bit AdamW8bit）と state 構造が
         # 合わず壊れる。不一致/失敗時は警告してリセット（model/scheduler は継続）。
@@ -1630,7 +1656,8 @@ def parse_args() -> argparse.Namespace:
                         "0 disables it; 1024 is a practical A100 starting point.")
     p.add_argument("--grouped_moe", action="store_true",
                    help="Use native BF16 grouped GEMM for routed experts on "
-                        "CUDA SM80+/PyTorch 2.11+; otherwise falls back safely.")
+                        "CUDA SM80+/PyTorch 2.11+; requested but unsupported "
+                        "configurations fail immediately.")
     p.add_argument("--optim8bit", action="store_true",
                    help="bitsandbytes の 8-bit AdamW を使う（オプティマイザ状態を 8-bit 量子化、"
                         "8→2 byte/param に削減・ほぼ無損失）。CUDA/bitsandbytes が無い場合は"

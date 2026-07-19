@@ -683,12 +683,27 @@ class _GroupedLinear(torch.autograd.Function):
         grad_x = _native_grouped_linear(
             grad_output, weight.transpose(-2, -1).contiguous(), offsets
         )
+        # The 2D x 2D weight-gradient kernel requires a 16-byte row stride.
+        # Zero-pad the final group so arbitrary token counts satisfy that
+        # constraint without changing any gradient values.
+        row_alignment = max(1, 16 // grad_output.element_size())
+        pad_rows = (-grad_output.shape[0]) % row_alignment
+        if pad_rows:
+            grad_output_for_weight = F.pad(grad_output, (0, 0, 0, pad_rows))
+            x_for_weight = F.pad(x, (0, 0, 0, pad_rows))
+            offsets_for_weight = torch.cat(
+                (offsets[:-1], offsets[-1:] + pad_rows)
+            )
+        else:
+            grad_output_for_weight = grad_output
+            x_for_weight = x
+            offsets_for_weight = offsets
         # In 2D x 2D mode grouped_mm partitions the contracting dimension by
         # offsets and returns one [out_features, in_features] gradient per group.
         grad_weight = _NATIVE_GROUPED_MM(
-            grad_output.transpose(0, 1).contiguous(),
-            x,
-            offs=offsets,
+            grad_output_for_weight.transpose(0, 1).contiguous(),
+            x_for_weight,
+            offs=offsets_for_weight,
         )
         return grad_x, grad_weight, None
 

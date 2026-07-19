@@ -128,10 +128,10 @@ def _dynamo_counts() -> Tuple[int, int]:
 def _validate_grouped_linear(device: torch.device) -> dict:
     """Compare native grouped_mm forward/backward with non-square F.linear."""
     generator = torch.Generator(device=device).manual_seed(1729)
-    counts = torch.tensor([3, 0, 5], device=device, dtype=torch.int32)
+    counts = torch.tensor([3, 0, 4], device=device, dtype=torch.int32)
     offsets = counts.cumsum(0).to(dtype=torch.int32)
     x = torch.randn(
-        8,
+        7,
         16,
         device=device,
         dtype=torch.bfloat16,

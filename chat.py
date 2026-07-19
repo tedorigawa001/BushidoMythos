@@ -21,7 +21,11 @@ import torch
 repo_root = Path(__file__).parent
 sys.path.insert(0, str(repo_root))
 
-from bushido_mythos import MythosConfig, BushidoMythos
+from bushido_mythos import (
+    BushidoMythos,
+    MythosConfig,
+    grouped_moe_runtime_status,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +38,48 @@ def get_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
+
+def resolve_inference_dtype(
+    device: torch.device, requested: str, grouped_moe: bool = False
+) -> torch.dtype:
+    """Resolve autocast dtype while preserving legacy FP32 by default."""
+    if device.type != "cuda":
+        if requested not in ("auto", "float32"):
+            raise ValueError(
+                f"--dtype {requested} is only supported on CUDA in chat.py"
+            )
+        return torch.float32
+    if requested == "float32":
+        return torch.float32
+    if requested == "float16":
+        return torch.float16
+    if requested == "bfloat16":
+        return torch.bfloat16
+    if grouped_moe:
+        return torch.bfloat16
+    return torch.float32
+
+
+def apply_grouped_moe(
+    model: BushidoMythos,
+    requested: bool,
+    device: torch.device,
+    compute_dtype: torch.dtype,
+) -> bool:
+    """Enable grouped MoE for chat, failing if an explicit request is inactive."""
+    if not requested:
+        return False
+    active, reason = grouped_moe_runtime_status(device, compute_dtype)
+    print(
+        "[grouped_moe] requested=true "
+        f"active={str(active).lower()} reason={reason}"
+    )
+    if not active:
+        raise RuntimeError("--grouped_moe requested but inactive: " + reason)
+    if not model.set_grouped_moe(True, compute_dtype):
+        raise RuntimeError("--grouped_moe requested but no MoE module was activated")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +274,7 @@ def generate(
     device: torch.device,
     finance_mode: bool = False,
     repetition_penalty: float = 1.3,
+    compute_dtype: torch.dtype = torch.float32,
 ) -> str:
     if finance_mode:
         prompt = _INSTRUCT_PREFIX + prompt + _FINANCE_RISK_SUFFIX + _INSTRUCT_RESPONSE
@@ -251,7 +298,12 @@ def generate(
 
     input_ids = torch.tensor([ids], dtype=torch.long, device=device)
 
-    with torch.no_grad():
+    use_amp = device.type == "cuda" and compute_dtype != torch.float32
+    with torch.no_grad(), torch.autocast(
+        device_type="cuda" if device.type == "cuda" else "cpu",
+        dtype=compute_dtype,
+        enabled=use_amp,
+    ):
         output_ids = model.generate(
             input_ids,
             max_new_tokens=max_new_tokens,
@@ -281,7 +333,10 @@ def generate(
 def chat_loop(args: argparse.Namespace) -> None:
     # 混合 INT8(make_mixed_int8.py 製)は dynamic 量子化のため CPU 実行
     device = torch.device("cpu") if args.mixed_int8 else get_device()
-    print(f"Device: {device}\n")
+    compute_dtype = resolve_inference_dtype(
+        device, args.dtype, grouped_moe=args.grouped_moe
+    )
+    print(f"Device: {device}  dtype: {compute_dtype}\n")
 
     ckpt_path = args.ckpt or find_latest_ckpt(args.ckpt_dir)
     if not ckpt_path:
@@ -299,6 +354,9 @@ def chat_loop(args: argparse.Namespace) -> None:
         print(f"Loaded mixed-INT8: {ckpt_path}")
     else:
         model, cfg = load_model(ckpt_path, device, allow_unsafe=args.allow_unsafe_checkpoint)
+        apply_grouped_moe(
+            model, args.grouped_moe, device, compute_dtype
+        )
     tokenizer = build_tokenizer(cfg.vocab_size, mode=args.tokenizer)
 
     # top_k の上限を vocab_size に制限
@@ -335,6 +393,7 @@ def chat_loop(args: argparse.Namespace) -> None:
             device=device,
             finance_mode=args.finance_mode,
             repetition_penalty=args.rep_penalty,
+            compute_dtype=compute_dtype,
         )
         print(" " * 20, end="\r")  # "生成中..." の残骸を消去
         print(f"[プロンプト] {prompt}")
@@ -373,6 +432,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mixed_int8", action="store_true",
                    help="make_mixed_int8.py で作った混合精度 INT8 モデルをロードする"
                         "（CPU 実行。--allow_unsafe_checkpoint の併用が必須）")
+    p.add_argument("--dtype", default="auto",
+                   choices=["auto", "float32", "float16", "bfloat16"],
+                   help="推論dtype。autoは通常FP32、--grouped_moe指定時はBF16")
+    p.add_argument("--grouped_moe", action="store_true",
+                   help="CUDA SM80+/PyTorch 2.11+でnative BF16 grouped MoEを使う。"
+                        "要求時に無効なら即時エラー")
     args = p.parse_args()
 
     # バリデーション
@@ -386,6 +451,8 @@ def parse_args() -> argparse.Namespace:
         p.error(f"--loops は 1 以上を指定してください (指定値: {args.loops})")
     if args.rep_penalty < 1.0:
         p.error(f"--rep_penalty は 1.0 以上を指定してください (指定値: {args.rep_penalty})")
+    if args.mixed_int8 and args.grouped_moe:
+        p.error("--mixed_int8 と --grouped_moe は同時に指定できません")
 
     return args
 

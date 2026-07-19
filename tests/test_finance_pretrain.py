@@ -223,6 +223,30 @@ class TestCheckpoint:
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         assert ckpt["tag"] == "Phase1-WikiText103"
 
+    def test_save_includes_grouped_moe_runtime_setting(self, tmp_path):
+        path = tmp_path / "ckpt.pt"
+        for module in self.model.modules():
+            if hasattr(module, "use_grouped_moe"):
+                module.use_grouped_moe = True
+        save_checkpoint(path, step=5, model=self.model, optimizer=self.optimizer,
+                        scheduler=self.scheduler, cfg=self.cfg)
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        assert ckpt["runtime_config"]["grouped_moe"] is True
+
+    def test_load_warns_on_grouped_moe_runtime_mismatch(self, tmp_path, capsys):
+        path = tmp_path / "ckpt.pt"
+        for module in self.model.modules():
+            if hasattr(module, "use_grouped_moe"):
+                module.use_grouped_moe = True
+        save_checkpoint(path, step=5, model=self.model, optimizer=self.optimizer,
+                        scheduler=self.scheduler, cfg=self.cfg)
+
+        model2, opt2, sched2 = make_model_and_opt(self.cfg)
+        load_checkpoint(str(path), model2, opt2, sched2)
+        output = capsys.readouterr().out
+        assert "grouped_moe runtime setting mismatch" in output
+        assert "saved=true / current=false" in output
+
     def test_load_restores_step(self, tmp_path):
         path = tmp_path / "ckpt.pt"
         save_checkpoint(path, step=42, model=self.model, optimizer=self.optimizer,
