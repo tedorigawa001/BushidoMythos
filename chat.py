@@ -357,6 +357,13 @@ def chat_loop(args: argparse.Namespace) -> None:
         apply_grouped_moe(
             model, args.grouped_moe, device, compute_dtype
         )
+    act_compute_skip = not args.disable_act_compute_skip
+    model.set_act_compute_skip(act_compute_skip)
+    print(
+        "[act_compute_skip] "
+        f"active={str(act_compute_skip).lower()} "
+        "scope=inference_kv_cache_all_halted"
+    )
     tokenizer = build_tokenizer(cfg.vocab_size, mode=args.tokenizer)
 
     # top_k の上限を vocab_size に制限
@@ -438,6 +445,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grouped_moe", action="store_true",
                    help="CUDA SM80+/PyTorch 2.11+でnative BF16 grouped MoEを使う。"
                         "要求時に無効なら即時エラー")
+    p.add_argument("--disable_act_compute_skip", action="store_true",
+                   help="ACT全halt後のcache-only loop充填を無効化しlegacy decodeを使う")
     args = p.parse_args()
 
     # バリデーション

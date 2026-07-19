@@ -371,6 +371,13 @@ class TestGQAttention:
         self.attn(x, self.freqs, kv_cache=cache, cache_key="layer0")
         assert cache["layer0"]["k"].shape[1] == k_len + T
 
+    def test_append_kv_cache_skips_attention_output(self):
+        cache = {}
+        x = torch.randn(B, T, self.cfg.dim)
+        self.attn.append_kv_cache(x, self.freqs, cache, "layer0")
+        assert cache["layer0"]["k"].shape[:2] == (B, T)
+        assert cache["layer0"]["v"].shape[:2] == (B, T)
+
     def test_kv_cache_reuses_reserved_storage(self):
         cache = _KVCache(capacity=T + 1)
         x = torch.randn(B, T, self.cfg.dim)
@@ -493,6 +500,13 @@ class TestMLAttention:
         first_len = cache["mla0"]["c_kv"].shape[1]
         self.attn(x, self.freqs, kv_cache=cache, cache_key="mla0")
         assert cache["mla0"]["c_kv"].shape[1] == first_len + T
+
+    def test_append_kv_cache_stores_only_compressed_values(self):
+        cache = {}
+        x = torch.randn(B, T, self.cfg.dim)
+        self.attn.append_kv_cache(x, self.freqs, cache, "mla0")
+        assert cache["mla0"]["c_kv"].shape[:2] == (B, T)
+        assert cache["mla0"]["k_rope"].shape[:2] == (B, T)
 
     def test_cache_reuses_reserved_storage(self):
         cache = _KVCache(capacity=T + 1)
@@ -1583,6 +1597,75 @@ class TestACTInvariants:
 
         assert "recurrent._act_threshold" not in state_keys
         assert "_act_aux_loss_weight" not in state_keys
+
+
+class TestACTComputeSkip:
+    @staticmethod
+    def _force_first_loop_halt(model):
+        with torch.no_grad():
+            model.recurrent.act.halt.weight.zero_()
+            model.recurrent.act.halt.bias.fill_(20.0)
+
+    @staticmethod
+    def _assert_cache_equal(left, right):
+        assert left.keys() == right.keys()
+        for key in left:
+            assert left[key].keys() == right[key].keys()
+            for name in left[key]:
+                assert torch.equal(left[key][name], right[key][name]), (
+                    key, name
+                )
+
+    @pytest.mark.parametrize("attn_type", ["gqa", "mla"])
+    def test_cache_only_loops_match_legacy_logits_and_cache(self, attn_type):
+        cfg = (
+            gqa_cfg(max_loop_iters=4)
+            if attn_type == "gqa"
+            else mla_cfg(max_loop_iters=4)
+        )
+        torch.manual_seed(123)
+        legacy = BushidoMythos(cfg).eval()
+        skipped = BushidoMythos(cfg).eval()
+        skipped.load_state_dict(legacy.state_dict())
+        self._force_first_loop_halt(legacy)
+        self._force_first_loop_halt(skipped)
+        legacy.set_act_compute_skip(False)
+        skipped.set_act_compute_skip(True)
+        ids = torch.randint(0, cfg.vocab_size, (2, 3))
+        legacy_cache, skipped_cache = {}, {}
+
+        with torch.no_grad():
+            legacy_logits = legacy(ids, n_loops=4, kv_cache=legacy_cache)
+            skipped_logits = skipped(ids, n_loops=4, kv_cache=skipped_cache)
+        assert torch.equal(legacy_logits, skipped_logits)
+        self._assert_cache_equal(legacy_cache, skipped_cache)
+        assert legacy.act_compute_stats()["executed_loops"] == 4
+        assert legacy.act_compute_stats()["cache_only_loops"] == 0
+        assert skipped.act_compute_stats()["executed_loops"] == 1
+        assert skipped.act_compute_stats()["cache_only_loops"] == 3
+
+        next_ids = torch.randint(0, cfg.vocab_size, (2, 1))
+        with torch.no_grad():
+            legacy_next = legacy(
+                next_ids, n_loops=4, kv_cache=legacy_cache, start_pos=3
+            )
+            skipped_next = skipped(
+                next_ids, n_loops=4, kv_cache=skipped_cache, start_pos=3
+            )
+        assert torch.equal(legacy_next, skipped_next)
+        self._assert_cache_equal(legacy_cache, skipped_cache)
+
+    def test_training_mode_never_uses_cache_only_skip(self):
+        model = BushidoMythos(gqa_cfg(max_loop_iters=4)).train()
+        self._force_first_loop_halt(model)
+        with torch.no_grad():
+            model(
+                torch.randint(0, model.cfg.vocab_size, (1, 2)),
+                n_loops=4,
+                kv_cache={},
+            )
+        assert model.act_compute_stats()["executed_loops"] == 4
+        assert model.act_compute_stats()["cache_only_loops"] == 0
 
 
 # ---------------------------------------------------------------------------

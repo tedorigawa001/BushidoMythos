@@ -182,11 +182,11 @@ PyTorchの`scaled_dot_product_attention`が`enable_gqa`を公開し、deviceがC
 
 A100 BF16、batch 16、sequence 256、12 query heads/4 KV headsの初回計測では、legacy 8,826,091 tokens/secに対してnative 15,864,937 tokens/sec（1.798倍）でした。peak allocationは76.4から68.4 MiBへ8.0 MiB（約10.5%）減少し、outputとQ/K/V gradientの最大差はすべて0でした。nativeを本番既定として維持します。ただしこれはGQA単体のforward/backward結果であり、総学習wall-clock効果はphase JSONで別に確認します。
 
-## P2: ACTの実計算スキップ
+## P2: ACTの実計算スキップ（全row halt経路実装・A100計測済み）
 
 ### 現状
 
-ACTはhalt済み位置のhidden更新を止めますが、密なAttentionとMoEにはその位置も入力されます。全位置がhaltした場合はloopを終了できますが、部分的なhaltだけでは計算削減が限定的です。
+ACTはhalt済み位置のhidden更新を止めますが、密なAttentionとMoEにはその位置も入力されます。cacheなしでは全位置halt時にloopを終了できましたが、KV cache利用時は将来tokenが全loop depthのcacheを必要とするため、従来はhalt後もfull blockを実行していました。
 
 ### 改善候補
 
@@ -196,6 +196,10 @@ ACTはhalt済み位置のhidden更新を止めますが、密なAttentionとMoE�
 - token単位packingはcausal Attentionとcache indexを複雑化するため、最後に検討する。
 
 品質への影響があるため、固定loop baselineとのperplexity、金融行動評価、平均loop数を必ず併記します。
+
+第一段階として、no-grad inferenceかつKV cache利用時に全batch row/tokenがhaltした場合、残りdepthをK/V projectionとcache appendだけへ縮退させました。query、SDPA、MoE、LoRA、LTI injection、ACT predictorを省略します。halt-stepの正規化済み表現を各depthへ書くためlegacy cacheと一致し、GQA/MLAのpromptと次token decodeでlogits・全cache tensorの完全一致をCPUテスト済みです。学習、gradient-enabled forward、部分halt batchは従来経路のままです。
+
+`training/bench_chat_act_skip.py`はbatch-1 chatでlegacy/cache-onlyを比較し、full loop数、cache-only loop数、skip率、tokens/sec、peak VRAM、output ID一致をJSONへ記録します。phase5 checkpoint、prompt 64、生成32、8 loopsのA100 BF16計測では、1280 loop slotのうち955（74.6%）をcache-only化し、full computeはtokenあたり平均8から2.03 loopsへ減りました。decodeは25.60から62.61 generated tokens/sec（2.446倍）、peakは両方459.4 MiB、output IDは完全一致です。batch-1 chatでは既定有効として採用します。部分batch compactionとrequest bucketingはbatched servingを採用する場合の別段階とします。
 
 ## P2: Fused optimizer（実装・A100比較済み）
 

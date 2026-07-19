@@ -448,6 +448,25 @@ class GQAttention(nn.Module):
         self.wo = nn.Linear(cfg.n_heads * self.head_dim, cfg.dim, bias=False)
         self.dropout_p = cfg.dropout
 
+    def _project_kv(
+        self, x: torch.Tensor, freqs_cis: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        B, T, _ = x.shape
+        k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim)
+        v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim)
+        return apply_rope(k, freqs_cis), v
+
+    def append_kv_cache(
+        self,
+        x: torch.Tensor,
+        freqs_cis: torch.Tensor,
+        kv_cache: dict,
+        cache_key: str,
+    ) -> None:
+        """Project and append only K/V, without query, attention, or output work."""
+        k, v = self._project_kv(x, freqs_cis)
+        _append_kv_cache(kv_cache, cache_key, {"k": k, "v": v})
+
     def forward(
         self,
         x: torch.Tensor,
@@ -470,11 +489,9 @@ class GQAttention(nn.Module):
         """
         B, T, _ = x.shape
         q = self.wq(x).view(B, T, self.n_heads, self.head_dim)
-        k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim)
-        v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim)
+        k, v = self._project_kv(x, freqs_cis)
 
         q = apply_rope(q, freqs_cis)
-        k = apply_rope(k, freqs_cis)
 
         if kv_cache is not None:
             entry = _append_kv_cache(kv_cache, cache_key, {"k": k, "v": v})
@@ -600,6 +617,33 @@ class MLAttention(nn.Module):
         self.wo = nn.Linear(cfg.n_heads * cfg.v_head_dim, cfg.dim, bias=False)
         self.attn_drop = nn.Dropout(cfg.dropout)
 
+    def _project_cache_values(
+        self, x: torch.Tensor, freqs_cis: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        B, T, _ = x.shape
+        kv_raw = self.kv_down(x)
+        c_kv = kv_raw[..., : self.kv_lora_rank]
+        k_rope = kv_raw[..., self.kv_lora_rank :]
+        k_rope = (
+            k_rope.unsqueeze(2)
+            .expand(B, T, self.n_heads, self.qk_rope_dim)
+            .contiguous()
+        )
+        return c_kv, apply_rope(k_rope, freqs_cis)
+
+    def append_kv_cache(
+        self,
+        x: torch.Tensor,
+        freqs_cis: torch.Tensor,
+        kv_cache: dict,
+        cache_key: str,
+    ) -> None:
+        """Append compressed MLA cache values without reconstructing K/V or attention."""
+        c_kv, k_rope = self._project_cache_values(x, freqs_cis)
+        _append_kv_cache(
+            kv_cache, cache_key, {"c_kv": c_kv, "k_rope": k_rope}
+        )
+
     def forward(
         self,
         x: torch.Tensor,
@@ -630,17 +674,7 @@ class MLAttention(nn.Module):
         q = torch.cat([q_nope, q_rope], dim=-1)  # (B, T, H, nope+rope)
 
         # KV compress
-        kv_raw = self.kv_down(x)
-        c_kv = kv_raw[..., : self.kv_lora_rank]  # (B, T, lora_rank)  ← cached
-        k_rope = kv_raw[..., self.kv_lora_rank :]  # (B, T, rope_dim)
-        # expand rope keys across heads and apply RoPE before caching so
-        # retrieved keys are already positionally encoded
-        k_rope = (
-            k_rope.unsqueeze(2)
-            .expand(B, T, self.n_heads, self.qk_rope_dim)
-            .contiguous()
-        )
-        k_rope = apply_rope(k_rope, freqs_cis)  # (B, T, H, rope_dim) ← cached
+        c_kv, k_rope = self._project_cache_values(x, freqs_cis)
 
         if kv_cache is not None:
             entry = _append_kv_cache(
@@ -1122,6 +1156,18 @@ class TransformerBlock(nn.Module):
             x = x + ffn_out
         return x
 
+    def append_attention_kv_cache(
+        self,
+        x: torch.Tensor,
+        freqs_cis: torch.Tensor,
+        kv_cache: dict,
+        cache_key: str,
+    ) -> None:
+        """Populate this block's attention cache without attention or FFN work."""
+        self.attn.append_kv_cache(
+            self.attn_norm(x), freqs_cis, kv_cache, cache_key
+        )
+
 
 # ---------------------------------------------------------------------------
 # LTI-stable injection parameters  (spectral radius < 1 by construction)
@@ -1398,8 +1444,30 @@ class RecurrentBlock(nn.Module):
             cfg.dim // 8
         )  # fraction of channels receiving loop-index embedding
         self._last_ponder_cost: torch.Tensor = torch.tensor(0.0)
+        self.act_compute_skip = True
+        self._last_executed_loops = 0
+        self._last_cache_only_loops = 0
+        self._total_executed_loops = 0
+        self._total_cache_only_loops = 0
         if cfg.use_depth_attn:
             self.depth_attn = DepthCrossAttention(cfg)
+
+    def reset_compute_stats(self) -> None:
+        self._last_executed_loops = 0
+        self._last_cache_only_loops = 0
+        self._total_executed_loops = 0
+        self._total_cache_only_loops = 0
+
+    def compute_stats(self) -> dict:
+        total = self._total_executed_loops + self._total_cache_only_loops
+        return {
+            "executed_loops": self._total_executed_loops,
+            "cache_only_loops": self._total_cache_only_loops,
+            "total_loop_slots": total,
+            "compute_skip_fraction": (
+                self._total_cache_only_loops / total if total else 0.0
+            ),
+        }
 
     def forward(
         self,
@@ -1438,6 +1506,8 @@ class RecurrentBlock(nn.Module):
             else:
                 n_loops = self.cfg.max_loop_iters
         B, T, _ = h.shape
+        self._last_executed_loops = 0
+        self._last_cache_only_loops = 0
 
         halted = torch.zeros(B, T, device=h.device, dtype=torch.bool)
         cumulative_p = torch.zeros(B, T, device=h.device)
@@ -1450,6 +1520,7 @@ class RecurrentBlock(nn.Module):
         depth_vals: list = []
 
         for t in range(n_loops):
+            self._last_executed_loops += 1
             # Freeze h for halted positions before building combined.
             # detach() stops gradient flow through halted positions in later loops.
             if halted.any():
@@ -1547,11 +1618,31 @@ class RecurrentBlock(nn.Module):
                 depth_keys.append(dk)
                 depth_vals.append(dv)
 
-            # Only short-circuit when there is no KV cache to keep consistent.
-            # With a cache, every loop depth must run on every forward pass so
-            # later decode steps find populated keys at every cache_key.
-            if halted.all() and kv_cache is None:
-                break
+            if halted.all():
+                if kv_cache is None:
+                    break
+                # In no-grad inference, halted states no longer need Q/attention,
+                # MoE, LoRA, or injection work. Future decode steps still require
+                # one cache entry at every loop depth, so append only the exact
+                # frozen halt-step K/V representation for the remaining depths.
+                if (
+                    self.act_compute_skip
+                    and not self.training
+                    and not torch.is_grad_enabled()
+                ):
+                    if combined_frozen is None:
+                        raise RuntimeError(
+                            "ACT halted all positions without a frozen cache input"
+                        )
+                    for future_t in range(t + 1, n_loops):
+                        self.block.append_attention_kv_cache(
+                            combined_frozen,
+                            freqs_cis,
+                            kv_cache,
+                            f"recurrent_loop_{future_t}",
+                        )
+                        self._last_cache_only_loops += 1
+                    break
 
         # Positions that exhausted n_loops without crossing the threshold have
         # cumulative_p < act_threshold, so their h_out weights sum to < 1.
@@ -1563,6 +1654,8 @@ class RecurrentBlock(nn.Module):
 
         # Store mean ponder cost; BushidoMythos.forward() scales by act_aux_loss_weight.
         self._last_ponder_cost = ponder_steps.mean()
+        self._total_executed_loops += self._last_executed_loops
+        self._total_cache_only_loops += self._last_cache_only_loops
         return h_out
 
 
@@ -1669,6 +1762,16 @@ class BushidoMythos(nn.Module):
                 module.use_grouped_moe = bool(enabled and supported)
                 active = active or module.use_grouped_moe
         return active
+
+    def set_act_compute_skip(self, enabled: bool) -> None:
+        """Enable exact cache-only loop filling after all positions halt."""
+        self.recurrent.act_compute_skip = bool(enabled)
+
+    def reset_act_compute_stats(self) -> None:
+        self.recurrent.reset_compute_stats()
+
+    def act_compute_stats(self) -> dict:
+        return self.recurrent.compute_stats()
 
     @torch.no_grad()
     def update_moe_router_bias(

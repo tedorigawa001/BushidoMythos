@@ -558,6 +558,20 @@ Every requested mode records its actual backend and an inactive 8-bit/fused requ
 
 On A100 BF16 with batch 16, sequence 256, 8 loops, gradient checkpointing, grouped MoE, and compile enabled, fused AdamW reached 55,074 tokens/sec versus 47,396 for 8-bit (`1.162x`). Optimizer time fell from 13.002 to 2.278 ms/step (`-82.5%`), while peak allocation increased from 3,322.1 to 3,883.3 MiB (`+561.2 MiB`). Standard AdamW reached 51,838 tokens/sec at 6.410 ms/step and 3,883.2 MiB. Because the A100 40GB workload retains substantial headroom, the Colab configuration selects fused AdamW on Ampere-or-newer GPUs and keeps 8-bit on older GPUs where memory pressure is more important. Do not switch an in-progress 8-bit run merely for speed: its optimizer state is incompatible and will reset; use fused from the start of a new run or accept the boundary reset explicitly.
 
+ACT inference can skip full recurrent computation after every position in the current cached chunk has halted. The remaining loop depths still receive the exact frozen halt-step K/V representation, but avoid query projection, attention, MoE, LoRA, and recurrent injection work. This keeps future decode caches identical to the legacy path and does not run during training, gradient-enabled forward, or partial-batch halting. Benchmark batch-1 chat with:
+
+```bash
+python3 training/bench_chat_act_skip.py \
+  --ckpt checkpoints/finance_a100_v2/phase5_final.pt \
+  --prompt_len 64 --max_new_tokens 32 --n_loops 8 \
+  --warmup 3 --repeats 5 \
+  --json_out checkpoints/finance_a100_v2/bench_chat_act_skip.json
+```
+
+The result reports full loops, cache-only loops, compute-skip fraction, generated tokens/sec, peak VRAM, and exact output-ID agreement. Interactive chat enables this path by default and prints `[act_compute_skip] active=true scope=inference_kv_cache_all_halted`; pass `--disable_act_compute_skip` for a legacy comparison.
+
+The validated A100 BF16 batch-1 result with a 64-token prompt, 32 generated tokens, and 8 requested loops replaced 955 of 1,280 loop slots with cache-only work (`74.6%`). Full recurrent computation averaged 2.03 loops per generated token instead of 8. Decode throughput increased from 25.60 to 62.61 generated tokens/sec (`2.446x`) with unchanged 459.4 MiB peak allocation and exactly matching output IDs. The cache-only path therefore remains enabled by default for interactive decode.
+
 **VRAM diagnostics (`--mem_log_every`):**
 
 Every `--mem_log_every` steps the training log prints a `[VRAM]` line:

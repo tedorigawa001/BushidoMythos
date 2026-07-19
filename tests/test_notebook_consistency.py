@@ -191,8 +191,18 @@ class TestNotebookStructure:
         ids = [cell.get("id") for cell in self.nb["cells"]]
         grouped_training = ids.index("run-grouped-moe-benchmark")
         chat_benchmark = ids.index("run-chat-grouped-moe-benchmark")
+        native_gqa = ids.index("run-native-gqa-benchmark")
+        optimizer = ids.index("run-optimizer-benchmark")
+        act_skip = ids.index("run-act-skip-benchmark")
         inference = ids.index("section-chat")
-        assert grouped_training < chat_benchmark < inference
+        assert (
+            grouped_training
+            < chat_benchmark
+            < native_gqa
+            < optimizer
+            < act_skip
+            < inference
+        )
 
 
 if __name__ == "__main__":
