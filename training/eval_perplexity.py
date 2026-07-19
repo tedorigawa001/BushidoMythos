@@ -42,7 +42,25 @@ import torch.nn.functional as F
 repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
-from bushido_mythos import MythosConfig, BushidoMythos
+from bushido_mythos import (
+    BushidoMythos,
+    MythosConfig,
+    grouped_moe_runtime_status,
+)
+
+
+def _apply_grouped_moe(model: "BushidoMythos", requested: bool,
+                       device: torch.device,
+                       amp_dtype: Optional[torch.dtype]) -> None:
+    """--grouped_moe 要求時に grouped 経路を有効化する。無効環境では即エラー。"""
+    if not requested:
+        return
+    compute_dtype = amp_dtype or torch.float32
+    active, reason = grouped_moe_runtime_status(device, compute_dtype)
+    print(f"[grouped_moe] requested=true active={str(active).lower()} reason={reason}")
+    if not active:
+        raise RuntimeError("--grouped_moe requested but inactive: " + reason)
+    model.set_grouped_moe(True, compute_dtype)
 
 # ---------------------------------------------------------------------------
 # GPT-2 公開ベースライン（WikiText-103 test-set PPL）
@@ -346,6 +364,7 @@ def run_compare(args: argparse.Namespace, device: torch.device,
         if not path.exists():
             continue
         model, cfg = load_model(str(path), device, allow_unsafe=args.allow_unsafe_checkpoint)
+        _apply_grouped_moe(model, args.grouped_moe, device, amp_dtype)
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
         ppl, nll = compute_perplexity(
             model, cfg, token_ids, device,
@@ -399,6 +418,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max_chunks", type=int, default=None,
                    help="先頭 N チャンクで評価を打ち切る（高速な部分評価）。相対比較向け。"
                         "未指定=全チャンク")
+    p.add_argument("--grouped_moe", action="store_true",
+                   help="routed experts を native BF16 grouped GEMM で評価する"
+                        "（CUDA SM80+/PyTorch 2.11+）。要求時に無効な環境では即エラー。")
     return p.parse_args()
 
 
@@ -441,6 +463,7 @@ def main() -> None:
             sys.exit(1)
 
     model, cfg = load_model(args.ckpt, device, allow_unsafe=args.allow_unsafe_checkpoint)
+    _apply_grouped_moe(model, args.grouped_moe, device, amp_dtype)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
 
     stride_desc = f"stride={args.stride}" if args.stride else "non-overlapping"
