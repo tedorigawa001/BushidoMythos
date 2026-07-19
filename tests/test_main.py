@@ -18,6 +18,7 @@ from bushido_mythos.main import (
     _KVCache,
     apply_rope,
     chunked_linear_cross_entropy,
+    liger_fused_linear_cross_entropy,
     loop_index_embedding,
     precompute_rope_freqs,
 )
@@ -140,6 +141,47 @@ class TestChunkedLinearCrossEntropy:
                 torch.randn(11, 4),
                 torch.zeros(2, 2, dtype=torch.long),
                 chunk_size=2,
+            )
+
+
+class TestLigerFusedLinearCrossEntropy:
+    def test_runtime_status_reports_cpu_reason(self):
+        active, reason = mythos_main.liger_fused_ce_runtime_status(
+            torch.device("cpu")
+        )
+        assert active is False
+        assert "requires CUDA" in reason
+
+    def test_all_masked_returns_zero_loss_and_gradients_without_kernel(self):
+        hidden = torch.randn(2, 3, 4, requires_grad=True)
+        weight = torch.randn(11, 4, requires_grad=True)
+        targets = torch.randint(0, 11, (2, 3))
+        mask = torch.zeros_like(targets, dtype=torch.bool)
+
+        loss = liger_fused_linear_cross_entropy(
+            hidden, weight, targets, loss_mask=mask
+        )
+        loss.backward()
+
+        assert loss.item() == 0.0
+        assert torch.count_nonzero(hidden.grad) == 0
+        assert torch.count_nonzero(weight.grad) == 0
+
+    def test_unmasked_cpu_request_fails_loudly(self):
+        with pytest.raises(RuntimeError, match="requires CUDA"):
+            liger_fused_linear_cross_entropy(
+                torch.randn(2, 3, 4),
+                torch.randn(11, 4),
+                torch.zeros(2, 3, dtype=torch.long),
+            )
+
+    def test_rejects_mask_shape_mismatch(self):
+        with pytest.raises(ValueError, match="loss_mask/targets shape mismatch"):
+            liger_fused_linear_cross_entropy(
+                torch.randn(2, 3, 4),
+                torch.randn(11, 4),
+                torch.zeros(2, 3, dtype=torch.long),
+                loss_mask=torch.ones(2, 2, dtype=torch.bool),
             )
 
 

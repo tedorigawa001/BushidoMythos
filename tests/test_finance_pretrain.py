@@ -50,6 +50,21 @@ from chat import find_latest_ckpt
 from bushido_mythos import MythosConfig, BushidoMythos
 
 
+def test_liger_fused_ce_and_chunked_ce_are_mutually_exclusive(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "finance_pretrain.py",
+            "--liger_fused_ce",
+            "--ce_chunk_size",
+            "128",
+        ],
+    )
+    with pytest.raises(SystemExit, match="2"):
+        finance_pretrain.parse_args()
+
+
 # ---------------------------------------------------------------------------
 # Shared tiny model
 # ---------------------------------------------------------------------------

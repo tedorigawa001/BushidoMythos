@@ -150,6 +150,68 @@ def chunked_linear_cross_entropy(
     return total / denominator
 
 
+_LIGER_FUSED_CE_LOSS = None
+
+
+def liger_fused_ce_runtime_status(device: torch.device) -> tuple[bool, str]:
+    """Return whether Liger fused linear cross entropy can run."""
+    device = torch.device(device)
+    if device.type != "cuda":
+        return False, f"Liger fused CE requires CUDA (device={device.type})"
+    try:
+        from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+        if LigerFusedLinearCrossEntropyLoss is None:
+            return False, "LigerFusedLinearCrossEntropyLoss unavailable"
+        global _LIGER_FUSED_CE_LOSS
+        if _LIGER_FUSED_CE_LOSS is None:
+            _LIGER_FUSED_CE_LOSS = LigerFusedLinearCrossEntropyLoss()
+    except Exception as error:  # noqa: BLE001
+        return False, f"liger-kernel unavailable: {error}"
+    return True, "liger fused linear cross entropy"
+
+
+def liger_fused_linear_cross_entropy(
+    hidden: torch.Tensor,
+    weight: torch.Tensor,
+    targets: torch.Tensor,
+    loss_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Compute masked tied-head CE through Liger without materializing logits."""
+    if hidden.shape[:-1] != targets.shape:
+        raise ValueError(
+            f"hidden/targets shape mismatch: {hidden.shape[:-1]} vs {targets.shape}"
+        )
+    if weight.ndim != 2 or weight.shape[1] != hidden.shape[-1]:
+        raise ValueError(
+            f"weight shape {weight.shape} is incompatible with hidden dim {hidden.shape[-1]}"
+        )
+    if loss_mask is not None and loss_mask.shape != targets.shape:
+        raise ValueError(
+            f"loss_mask/targets shape mismatch: {loss_mask.shape} vs {targets.shape}"
+        )
+    flat_hidden = hidden.reshape(-1, hidden.shape[-1])
+    flat_targets = targets.reshape(-1)
+    if loss_mask is not None:
+        flat_mask = loss_mask.reshape(-1).bool()
+        if not bool(flat_mask.any()):
+            return flat_hidden.sum() * 0.0 + weight.sum() * 0.0
+        flat_targets = torch.where(
+            flat_mask,
+            flat_targets,
+            torch.full_like(flat_targets, -100),
+        )
+
+    if hidden.device.type != "cuda":
+        raise RuntimeError("Liger fused linear cross entropy requires CUDA")
+
+    global _LIGER_FUSED_CE_LOSS
+    if _LIGER_FUSED_CE_LOSS is None:
+        from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+
+        _LIGER_FUSED_CE_LOSS = LigerFusedLinearCrossEntropyLoss()
+    return _LIGER_FUSED_CE_LOSS(weight, flat_hidden, flat_targets)
+
+
 class _KVCache(dict):
     """Dictionary-compatible KV cache with an optional allocation capacity."""
 

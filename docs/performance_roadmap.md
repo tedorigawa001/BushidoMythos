@@ -146,7 +146,7 @@ A100、batch 16、seq 256、8 loops、gradient checkpoint、full-logits CEの同
 - 空expert、偏ったrouting、top-k境界を含む。
 - 小batchでは退行し得るため、複数token数で損益分岐点を測る。
 
-## P1: Fused Linear Cross Entropy
+## P1: Fused Linear Cross Entropy（実装・A100計測済み、本番不採用）
 
 ### 現状
 
@@ -159,11 +159,17 @@ A100、batch 16、seq 256、8 loops、gradient checkpoint、full-logits CEの同
 - SFTの`loss_mask`を融合経路でも維持する。
 - 通常の`forward()` APIは全logitsを返し、training scriptだけ融合loss APIを使用する。
 
-候補にはLiger Kernel系のfused linear cross entropyがあります。ただしcustom autogradを導入する場合は、weight tyingとmixed precisionのgradient精度を重点的に検証します。
+Liger Kernelのcomposable fused linear cross entropyをtraining script限定で実装しました。`--liger_fused_ce`指定時だけhidden-stateとtied LM-head重みを融合kernelへ渡し、通常の`forward()` APIは全logitsを返す互換性を維持します。SFTのmask外targetは`ignore_index=-100`へ変換し、全maskではhidden/head双方へ接続した厳密なzero lossを返します。`--ce_chunk_size`とは排他です。
+
+学習・ベンチは要求時にactive/reasonを必ず1行出力し、CUDAまたは`liger-kernel`が利用できなければfallbackせず停止します。ベンチは計測前に部分maskを含むloss、hidden gradient、tied weight gradientをfull-logits CEと比較し、JSONへ差分、active状態、request validityを保存します。
 
 追加依存なしのfallbackとして、tied LM headとCEをtoken軸でchunk化し、各chunkをactivation checkpointする経路を実装しました。forwardでchunk logitsを破棄してbackward時にLM headを再計算するため、保持logitsは`B*T*vocab_size`から最大`ce_chunk_size*vocab_size`になります。通常の`forward()`は全logitsを返し、`training/finance_pretrain.py --ce_chunk_size N`を指定した場合だけhidden-state経路を使用します。既定0は従来動作です。
 
-CPU fp32ではmaskなし・部分mask・全maskについてloss、hidden gradient、tied weight gradientの一致を確認済みです。A100の`ce_chunk_size=1024`計測では、compile経路が33,561 tokens/sec、peak 1353 MiB、計測区間の追加graph/breakは0、loss差0.00154114でした。full-logits compile（37,564 tokens/sec、3137 MiB）比で速度は10.7%低下し、peak VRAMは1784 MiB（56.9%）減りました。このfallbackは通常runの高速化としては不採用とし、OOM回避またはmicrobatch拡大で総throughputを回復できる場合に限定します。通常は`ce_chunk_size=0`を維持し、速度とメモリを同時改善する候補としてLiger等のCUDA fused kernelを別途評価します。
+CPU fp32ではmaskなし・部分mask・全maskについてloss、hidden gradient、tied weight gradientの一致を確認済みです。A100の`ce_chunk_size=1024`計測では、compile経路が33,561 tokens/sec、peak 1353 MiB、計測区間の追加graph/breakは0、loss差0.00154114でした。full-logits compile（37,564 tokens/sec、3137 MiB）比で速度は10.7%低下し、peak VRAMは1784 MiB（56.9%）減りました。このfallbackは通常runの高速化としては不採用とし、OOM回避またはmicrobatch拡大で総throughputを回復できる場合に限定します。
+
+本番構成に揃えたgrouped-MoE併用計測（batch 16、seq 256、8 loops、gradient checkpoint、steps=warmup=100）では、chunked CE compileが60,244 tokens/sec、peak 1385.1 MiB、loss差0.0017395で、計測区間の追加graph/breakは0でした。matching grouped full-logits（75,903 tokens/sec、3147 MiB）比で速度は20.6%低下し、peak VRAMは1761.9 MiB（56.0%）減りました。Liger比では1.857倍高速で、追加peakは82.2 MiBだけです。これにより通常runはfull logits、OOM時は`ce_chunk_size=1024`、Ligerは明示的な実験経路という優先順位を確定します。
+
+A100 BF16のLiger計測（batch 16、seq 256、8 loops、gradient checkpoint、grouped MoE、steps=warmup=100）は`steady_state_valid: true`で、計測区間の追加graph/breakは0でした。数値プローブの最大絶対差はloss 0.002001、hidden gradient 0.001953、tied weight gradient 0.000977で許容範囲内です。compileはLiger eager比1.054倍でしたが、compile throughputは32,435 tokens/sec、peak 1302.9 MiBでした。matching grouped-MoE full-logits（75,903 tokens/sec、3147 MiB）比で速度は57.3%低下し、peak VRAMは1844.1 MiB（58.6%）減りました。速度最適化としては本番不採用とし、Colabの`LIGER_FUSED_CE`は`False`を維持します。実装は明示的なメモリ圧迫時の実験経路として残し、通常runはfull logits、OOM fallbackは依存なしchunked CEを優先します。
 
 ### 検証
 
@@ -269,8 +275,8 @@ MLAのprojection行列をquery側とoutput側へ吸収し、圧縮latentのま�
 1. 無料T4でCUDA benchmark、data wait、checkpoint I/Oの計測を固定する。
 2. ACT curriculumと`torch.compile`を両立させ、A100投入前にT4でgraph再利用を確認する。
 3. A100でACT+compileの総wall-clock効果を測る。
-4. Fused Linear Cross Entropyをtraining script限定で導入する。
-5. MoE grouped GEMMをfallback付きで導入する。
+4. MoE grouped GEMMをfail-fast付きで導入する。
+5. Fused Linear Cross Entropyをtraining script限定で導入し、A100で採否を決める。
 6. checkpointのローカル保存と非同期Drive copyを本番計測し、Drive resumeを検証する。
 7. native GQAとfused optimizerを環境別に評価する。
 8. 単一GPUの結果を基準に、分散学習とGPU量子化へ進む。

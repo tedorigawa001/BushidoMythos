@@ -437,6 +437,7 @@ python training/finance_pretrain.py \
 | `--compile` | `False` | Uses `torch.compile()` on Ampere+; measured steady-state gain is about 7.5% for A100/batch 16/seq 256/8 loops with gradient checkpointing. Unsupported environments are skipped automatically |
 | `--grad_checkpoint` | `False` | Enable gradient checkpointing in the recurrent loop. Reduces activation memory in proportion to loop depth (larger effect with more loops) at the cost of ~30-40% extra compute |
 | `--ce_chunk_size` | `0` | Checkpoint tied LM-head cross entropy in token chunks, avoiding retention of full `(B,T,vocab)` logits. `0` disables it; benchmark `1024` first because backward recomputes the LM head |
+| `--liger_fused_ce` | `False` | Require Liger fused linear cross entropy on CUDA, avoiding full LM-head logits without chunk recomputation. Mutually exclusive with `--ce_chunk_size`; unavailable requests fail immediately |
 | `--grouped_moe` | `False` | Require native BF16 grouped GEMM for routed experts on CUDA SM80+ with PyTorch 2.11+. Prints active status/reason and exits if requested but unavailable; omission retains the legacy expert loop |
 | `--optim8bit` | `False` | Require bitsandbytes 8-bit AdamW (optimizer states 8→2 bytes/param, near-lossless). Requires CUDA + `pip install bitsandbytes`; unavailable requests fail immediately instead of falling back. Resume must use the same setting (a mismatch resets optimizer state with a warning) |
 | `--fused_optimizer` | `False` | Require CUDA `torch.optim.AdamW(fused=True)`. Mutually exclusive with `--optim8bit`; unsupported devices fail immediately instead of falling back. Uses fp32 optimizer states, so compare VRAM as well as speed |
@@ -504,15 +505,30 @@ To measure the dependency-free chunked linear cross-entropy fallback under the s
 ```bash
 python3 training/bench_act_compile.py \
   --ckpt checkpoints/finance_a100_v2/phase1_final.pt \
-  --device cuda --dtype auto --steps 100 --warmup 100 \
+  --device cuda --dtype bfloat16 --steps 100 --warmup 100 \
   --batch_size 16 --seq_len 256 --n_loops 8 --grad_checkpoint \
-  --ce_chunk_size 1024 \
-  --json_out checkpoints/finance_a100_v2/bench_act_compile_ce1024.json
+  --grouped_moe --ce_chunk_size 1024 \
+  --json_out checkpoints/finance_a100_v2/bench_act_compile_grouped_ce1024.json
 ```
 
 This path returns normalized hidden states from the model and activation-checkpoints each tied LM-head/CE chunk. It reduces the retained logits from `B*T*vocab_size` to at most `ce_chunk_size*vocab_size`, at the cost of recomputing the LM-head projection during backward. The regular `forward()` API still returns full logits, and `ce_chunk_size=0` preserves the previous training behavior.
 
-The first A100 result for `ce_chunk_size=1024` produced 33,561 compiled tokens/sec and 1,353 MiB peak allocation, with zero graphs/breaks created during measurement and the same `0.00154114` eager/compile loss delta as the baseline. Against the matching full-logits compiled run (37,564 tokens/sec, 3,137 MiB), this is a **10.7% throughput reduction** for a **1,784 MiB / 56.9% peak-memory reduction**. Keep `ce_chunk_size=0` when the workload fits; use chunking as an OOM fallback or when the saved memory enables a larger microbatch that recovers end-to-end throughput.
+The production-matched A100 run with grouped MoE reached 60,244 compiled tokens/sec and 1,385.1 MiB peak allocation, with zero graphs/breaks created during measurement and a `0.0017395` eager/compile loss delta. Against grouped-MoE full logits (75,903 tokens/sec, 3,147 MiB), this is a **20.6% throughput reduction** for a **1,761.9 MiB / 56.0% peak-memory reduction**. It is also 1.857x faster than Liger fused CE while using only 82.2 MiB more peak memory. Keep `ce_chunk_size=0` when training fits; set it to `1024` as the preferred OOM fallback or when the saved memory enables a larger microbatch that recovers end-to-end throughput.
+
+The CUDA fused candidate uses the [Liger Kernel composable fused linear cross entropy](https://github.com/linkedin/Liger-Kernel). Install `liger-kernel`, then measure it against the matching compiled grouped-MoE baseline:
+
+```bash
+python3 training/bench_act_compile.py \
+  --ckpt checkpoints/finance_a100_v2/phase1_final.pt \
+  --device cuda --dtype bfloat16 --steps 100 --warmup 100 \
+  --batch_size 16 --seq_len 256 --n_loops 8 --grad_checkpoint \
+  --grouped_moe --liger_fused_ce \
+  --json_out checkpoints/finance_a100_v2/bench_act_compile_liger_ce.json
+```
+
+Both benchmark and training print `[liger_fused_ce] requested=true active=... reason=...` and abort an inactive request. Before timing, the benchmark compares masked loss plus hidden-state and tied-head gradients with full-logits CE. JSON records the probe deltas, `liger_fused_ce_active`, and request validity. SFT masks are converted to Liger's `ignore_index=-100`; an all-masked batch returns an exact zero loss connected to both hidden states and the tied head.
+
+The A100 BF16 run passed the numerical probe (`loss=0.002001`, hidden gradient `0.001953`, tied-weight gradient `0.000977` maximum absolute deltas), request validation, and steady-state graph check. Liger reached 32,435 compiled tokens/sec at 1,302.9 MiB peak. Against the matching grouped-MoE full-logits result (75,903 tokens/sec, 3,147 MiB), throughput fell **57.3%** while peak allocation fell **1,844.1 MiB / 58.6%**. Compile still improved the Liger path by 1.054x. Therefore `LIGER_FUSED_CE` remains off for production throughput; `--liger_fused_ce` is retained only as an explicit experiment. Grouped chunked CE is the preferred memory fallback.
 
 Native grouped MoE can be measured against the same full-logits baseline with:
 

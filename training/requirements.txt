@@ -5,3 +5,6 @@ open-mythos>=0.5.0,<1.0
 
 # Optional: 8-bit optimizer (--optim8bit). CUDA only; explicit requests fail if absent.
 # bitsandbytes>=0.43.0
+
+# Optional: fused tied-head cross entropy (--liger_fused_ce). CUDA only.
+# liger-kernel

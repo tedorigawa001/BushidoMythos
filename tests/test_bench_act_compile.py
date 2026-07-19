@@ -70,6 +70,7 @@ def test_eager_benchmark_cpu_smoke():
     assert result.warmup_unique_graphs == 0
     assert result.measured_unique_graphs == 0
     assert result.grouped_moe_active is False
+    assert result.liger_fused_ce_active is False
 
 
 def test_chunked_ce_benchmark_cpu_smoke():

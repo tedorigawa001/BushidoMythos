@@ -240,6 +240,8 @@ from bushido_mythos import (
     MythosConfig,
     chunked_linear_cross_entropy,
     grouped_moe_runtime_status,
+    liger_fused_ce_runtime_status,
+    liger_fused_linear_cross_entropy,
     native_gqa_sdpa_runtime_status,
 )
 
@@ -1287,6 +1289,7 @@ def run_phase(
 
     grad_accum = getattr(args, 'grad_accum_steps', 1)
     ce_chunk_size = getattr(args, "ce_chunk_size", 0)
+    liger_fused_ce = getattr(args, "liger_fused_ce", False)
     eff_batch  = args.batch_size * grad_accum
 
     print(f"\n{'='*60}")
@@ -1378,7 +1381,15 @@ def run_phase(
                                      anchor_step=act_anchor_step)
 
             with torch.autocast(autocast_device, dtype=amp_dtype, enabled=use_amp):
-                if ce_chunk_size > 0:
+                if liger_fused_ce:
+                    hidden = model(x, n_loops=n_loops, return_hidden=True)
+                    ce_loss = liger_fused_linear_cross_entropy(
+                        hidden,
+                        getattr(model, "_orig_mod", model).head.weight,
+                        y,
+                        loss_mask=loss_mask,
+                    )
+                elif ce_chunk_size > 0:
                     hidden = model(x, n_loops=n_loops, return_hidden=True)
                     ce_loss = chunked_linear_cross_entropy(
                         hidden,
@@ -1675,6 +1686,17 @@ def train(args: argparse.Namespace) -> None:
                 "--grouped_moe requested but inactive: " + grouped_moe_reason
             )
 
+    if args.liger_fused_ce:
+        liger_active, liger_reason = liger_fused_ce_runtime_status(device)
+        print(
+            "[liger_fused_ce] requested=true "
+            f"active={str(liger_active).lower()} reason={liger_reason}"
+        )
+        if not liger_active:
+            raise RuntimeError(
+                "--liger_fused_ce requested but inactive: " + liger_reason
+            )
+
     model = BushidoMythos(cfg).to(device)
     model.set_grouped_moe(grouped_moe_requested, amp_dtype)
 
@@ -1928,6 +1950,7 @@ def train(args: argparse.Namespace) -> None:
                 "device": str(device),
                 "dtype": str(amp_dtype),
                 "grouped_moe": grouped_moe_requested,
+                "liger_fused_ce": bool(args.liger_fused_ce),
                 "compile": bool(args.compile),
                 "optimizer_backend": optimizer_backend(optimizer),
             },
@@ -2047,6 +2070,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ce_chunk_size", type=int, default=0,
                    help="Checkpoint tied LM-head cross entropy in token chunks. "
                         "0 disables it; 1024 is a practical A100 starting point.")
+    p.add_argument("--liger_fused_ce", action="store_true",
+                   help="Require Liger fused linear cross entropy on CUDA; "
+                        "mutually exclusive with --ce_chunk_size.")
     p.add_argument("--grouped_moe", action="store_true",
                    help="Use native BF16 grouped GEMM for routed experts on "
                         "CUDA SM80+/PyTorch 2.11+; requested but unsupported "
@@ -2108,6 +2134,8 @@ def parse_args() -> argparse.Namespace:
         p.error(f"--grad_accum_steps must be >= 1 (got {args.grad_accum_steps})")
     if args.ce_chunk_size < 0:
         p.error(f"--ce_chunk_size must be >= 0 (got {args.ce_chunk_size})")
+    if args.liger_fused_ce and args.ce_chunk_size > 0:
+        p.error("--liger_fused_ce and --ce_chunk_size are mutually exclusive")
     if args.keep_local_completed < 0:
         p.error(
             "--keep_local_completed must be >= 0 "

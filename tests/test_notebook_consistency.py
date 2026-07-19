@@ -94,6 +94,26 @@ class TestRequiredFlags:
                 f"Training cell {i} missing GROUPED_MOE conditional"
             )
 
+    def test_liger_fused_ce_conditional_in_all_training_cells(self):
+        """Every training phase must honor the benchmark-gated Liger switch."""
+        for i, src in enumerate(self.cells):
+            assert (
+                'if LIGER_FUSED_CE:' in src
+                and 'cmd.append("--liger_fused_ce")' in src
+            ), f"Training cell {i} missing LIGER_FUSED_CE conditional"
+
+    def test_chunked_ce_conditional_in_all_training_cells(self):
+        """Every training phase must honor the OOM fallback chunk size."""
+        all_source = "".join(
+            "".join(cell["source"]) for cell in _load_nb()["cells"]
+        )
+        assert "LIGER_FUSED_CE and CE_CHUNK_SIZE > 0" in all_source
+        for i, src in enumerate(self.cells):
+            assert (
+                "if CE_CHUNK_SIZE > 0:" in src
+                and 'cmd += ["--ce_chunk_size", str(CE_CHUNK_SIZE)]' in src
+            ), f"Training cell {i} missing CE_CHUNK_SIZE conditional"
+
     def test_optimizer_switches_are_exclusive_and_present_in_all_cells(self):
         all_source = "".join(
             "".join(cell["source"]) for cell in _load_nb()["cells"]
@@ -170,6 +190,8 @@ class TestNotebookStructure:
         assert "subprocess.run" in source
         assert "check=True" in source
         assert "import bitsandbytes" in source
+        assert "liger-kernel" in source
+        assert "LigerFusedLinearCrossEntropyLoss" in source
 
     def test_save_cache_cell_exists(self):
         """Notebook must contain a save-back cell after training."""
@@ -194,6 +216,7 @@ class TestNotebookStructure:
         native_gqa = ids.index("run-native-gqa-benchmark")
         optimizer = ids.index("run-optimizer-benchmark")
         act_skip = ids.index("run-act-skip-benchmark")
+        liger_ce = ids.index("run-liger-fused-ce-benchmark")
         inference = ids.index("section-chat")
         assert (
             grouped_training
@@ -201,6 +224,7 @@ class TestNotebookStructure:
             < native_gqa
             < optimizer
             < act_skip
+            < liger_ce
             < inference
         )
 

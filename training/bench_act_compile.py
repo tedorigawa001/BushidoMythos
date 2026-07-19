@@ -31,6 +31,8 @@ from bushido_mythos import (
     MythosConfig,
     chunked_linear_cross_entropy,
     grouped_moe_runtime_status,
+    liger_fused_ce_runtime_status,
+    liger_fused_linear_cross_entropy,
 )
 from bushido_mythos.main import _GroupedLinear
 from training.eval_perplexity import load_model
@@ -51,6 +53,7 @@ class BenchResult:
     unique_graphs: int
     graph_breaks: int
     grouped_moe_active: bool
+    liger_fused_ce_active: bool
 
 
 def _tiny_cfg() -> MythosConfig:
@@ -190,6 +193,66 @@ def _validate_grouped_linear(device: torch.device) -> dict:
     return metrics
 
 
+def _validate_liger_fused_ce(
+    device: torch.device, amp_dtype: torch.dtype
+) -> dict:
+    """Compare Liger loss and gradients with masked full-logits CE."""
+    generator = torch.Generator(device=device).manual_seed(2718)
+    hidden = torch.randn(
+        2, 7, 64, device=device, generator=generator, requires_grad=True
+    )
+    weight = torch.randn(
+        128, 64, device=device, generator=generator, requires_grad=True
+    )
+    targets = torch.randint(
+        0, 128, (2, 7), device=device, generator=generator
+    )
+    mask = torch.tensor(
+        [
+            [False, True, True, False, True, True, True],
+            [True, False, True, True, False, True, True],
+        ],
+        device=device,
+    )
+    hidden_ref = hidden.detach().clone().requires_grad_(True)
+    weight_ref = weight.detach().clone().requires_grad_(True)
+    use_amp = amp_dtype != torch.float32
+
+    with torch.autocast("cuda", dtype=amp_dtype, enabled=use_amp):
+        loss = liger_fused_linear_cross_entropy(
+            hidden, weight, targets, loss_mask=mask
+        )
+        logits = F.linear(hidden_ref, weight_ref)
+        per_token = F.cross_entropy(
+            logits.reshape(-1, weight.shape[0]),
+            targets.reshape(-1),
+            reduction="none",
+        )
+        flat_mask = mask.reshape(-1).to(per_token.dtype)
+        reference = (per_token * flat_mask).sum() / flat_mask.sum()
+
+    grads = torch.autograd.grad(loss, (hidden, weight))
+    ref_grads = torch.autograd.grad(reference, (hidden_ref, weight_ref))
+    metrics = {
+        "loss_abs_delta": float((loss - reference).detach().abs()),
+        "hidden_grad_max_abs_delta": float(
+            (grads[0] - ref_grads[0]).detach().abs().max()
+        ),
+        "weight_grad_max_abs_delta": float(
+            (grads[1] - ref_grads[1]).detach().abs().max()
+        ),
+    }
+    try:
+        torch.testing.assert_close(loss, reference, atol=0.02, rtol=0.01)
+        torch.testing.assert_close(grads[0], ref_grads[0], atol=0.05, rtol=0.03)
+        torch.testing.assert_close(grads[1], ref_grads[1], atol=0.05, rtol=0.03)
+    except AssertionError as error:
+        raise RuntimeError(
+            "Liger fused CE numerical probe failed: " + str(metrics)
+        ) from error
+    return metrics
+
+
 def _benchmark_mode(
     model: BushidoMythos,
     cfg: MythosConfig,
@@ -202,6 +265,7 @@ def _benchmark_mode(
     seed: int,
     compile_backend: str = "inductor",
     ce_chunk_size: int = 0,
+    liger_fused_ce: bool = False,
 ) -> BenchResult:
     if compile_model:
         if not hasattr(torch, "compile") or not torch._dynamo.is_dynamo_supported():
@@ -226,7 +290,12 @@ def _benchmark_mode(
         with torch.autocast(
             autocast_device, dtype=amp_dtype, enabled=use_amp
         ):
-            if ce_chunk_size > 0:
+            if liger_fused_ce:
+                hidden = model(x, n_loops=n_loops, return_hidden=True)
+                ce_loss = liger_fused_linear_cross_entropy(
+                    hidden, target.head.weight, y
+                )
+            elif ce_chunk_size > 0:
                 hidden = model(x, n_loops=n_loops, return_hidden=True)
                 ce_loss = chunked_linear_cross_entropy(
                     hidden, target.head.weight, y, ce_chunk_size
@@ -283,6 +352,7 @@ def _benchmark_mode(
             for module in target.modules()
             if hasattr(module, "use_grouped_moe")
         ),
+        liger_fused_ce_active=liger_fused_ce,
     )
 
 
@@ -335,6 +405,11 @@ def main() -> None:
         help="Checkpoint tied LM-head CE in token chunks; 0 uses full logits",
     )
     parser.add_argument(
+        "--liger_fused_ce",
+        action="store_true",
+        help="Require Liger fused linear cross entropy on CUDA",
+    )
+    parser.add_argument(
         "--grouped_moe",
         action="store_true",
         help="Use native BF16 grouped GEMM for routed experts when available",
@@ -352,6 +427,8 @@ def main() -> None:
         parser.error("--warmup must be >= 0")
     if args.ce_chunk_size < 0:
         parser.error("--ce_chunk_size must be >= 0")
+    if args.liger_fused_ce and args.ce_chunk_size > 0:
+        parser.error("--liger_fused_ce and --ce_chunk_size are mutually exclusive")
 
     requested_device = torch.device(args.device)
     if requested_device.type == "cuda" and not torch.cuda.is_available():
@@ -360,6 +437,23 @@ def main() -> None:
         requested_device = torch.device("cpu")
     device = requested_device
     amp_dtype = _resolve_dtype(device, args.dtype)
+
+    liger_active, liger_reason = liger_fused_ce_runtime_status(device)
+    if args.liger_fused_ce:
+        print(
+            "[liger_fused_ce] requested=true "
+            f"active={str(liger_active).lower()} reason={liger_reason}"
+        )
+        if not liger_active:
+            raise RuntimeError(
+                "--liger_fused_ce requested but inactive: " + liger_reason
+            )
+
+    liger_probe = (
+        _validate_liger_fused_ce(device, amp_dtype)
+        if args.liger_fused_ce
+        else None
+    )
 
     grouped_moe_active, grouped_moe_reason = grouped_moe_runtime_status(
         device, amp_dtype
@@ -450,7 +544,7 @@ def main() -> None:
         result = _benchmark_mode(
             model, cfg, batches, device, amp_dtype, args.n_loops,
             args.warmup, compile_model, args.seed, args.compile_backend,
-            args.ce_chunk_size,
+            args.ce_chunk_size, args.liger_fused_ce,
         )
         results.append(result)
         print(
@@ -461,7 +555,8 @@ def main() -> None:
             f"(warmup={result.warmup_unique_graphs}, measured={result.measured_unique_graphs})  "
             f"breaks={result.graph_breaks} "
             f"(warmup={result.warmup_graph_breaks}, measured={result.measured_graph_breaks})  "
-            f"grouped_moe_active={str(result.grouped_moe_active).lower()}"
+            f"grouped_moe_active={str(result.grouped_moe_active).lower()}  "
+            f"liger_fused_ce_active={str(result.liger_fused_ce_active).lower()}"
         )
         del model
         gc.collect()
@@ -488,6 +583,11 @@ def main() -> None:
             "grad_checkpoint": args.grad_checkpoint,
             "compile_backend": args.compile_backend,
             "ce_chunk_size": args.ce_chunk_size,
+            "liger_fused_ce": args.liger_fused_ce,
+            "liger_fused_ce_reason": (
+                liger_reason if args.liger_fused_ce else "not_requested"
+            ),
+            "liger_fused_ce_probe": liger_probe,
             "grouped_moe": args.grouped_moe,
             "grouped_moe_reason": (
                 grouped_moe_reason if args.grouped_moe else "not_requested"
@@ -500,11 +600,19 @@ def main() -> None:
             not args.grouped_moe
             or all(result.grouped_moe_active for result in results)
         ),
+        "liger_fused_ce_request_valid": (
+            not args.liger_fused_ce
+            or all(result.liger_fused_ce_active for result in results)
+        ),
         "steady_state_valid": (
             all(result.measured_unique_graphs == 0 for result in results)
             and (
                 not args.grouped_moe
                 or all(result.grouped_moe_active for result in results)
+            )
+            and (
+                not args.liger_fused_ce
+                or all(result.liger_fused_ce_active for result in results)
             )
         ),
         "speedup": speedup,
