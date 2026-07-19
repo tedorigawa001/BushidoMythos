@@ -40,6 +40,29 @@ def test_eager_benchmark_cpu_smoke():
     assert result.measured_unique_graphs == 0
 
 
+def test_chunked_ce_benchmark_cpu_smoke():
+    cfg = _tiny_cfg()
+    device = torch.device("cpu")
+    model = BushidoMythos(cfg)
+    batches = _make_batches(1, 1, 4, cfg.vocab_size, device, seed=0)
+
+    result = _benchmark_mode(
+        model=model,
+        cfg=cfg,
+        batches=batches,
+        device=device,
+        amp_dtype=torch.float32,
+        n_loops=1,
+        warmup=0,
+        compile_model=False,
+        seed=0,
+        ce_chunk_size=2,
+    )
+
+    assert result.mode == "eager"
+    assert result.first_loss > 0
+
+
 @pytest.mark.skipif(
     not torch._dynamo.is_dynamo_supported(),
     reason="torch.compile (Dynamo) is unavailable",

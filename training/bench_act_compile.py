@@ -26,7 +26,11 @@ import torch.nn.functional as F
 repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
-from bushido_mythos import BushidoMythos, MythosConfig
+from bushido_mythos import (
+    BushidoMythos,
+    MythosConfig,
+    chunked_linear_cross_entropy,
+)
 from training.eval_perplexity import load_model
 
 
@@ -129,6 +133,7 @@ def _benchmark_mode(
     compile_model: bool,
     seed: int,
     compile_backend: str = "inductor",
+    ce_chunk_size: int = 0,
 ) -> BenchResult:
     if compile_model:
         if not hasattr(torch, "compile") or not torch._dynamo.is_dynamo_supported():
@@ -153,10 +158,17 @@ def _benchmark_mode(
         with torch.autocast(
             autocast_device, dtype=amp_dtype, enabled=use_amp
         ):
-            logits = model(x, n_loops=n_loops)
-            loss = F.cross_entropy(
-                logits.reshape(-1, cfg.vocab_size), y.reshape(-1)
-            ) + model._last_aux_loss
+            if ce_chunk_size > 0:
+                hidden = model(x, n_loops=n_loops, return_hidden=True)
+                ce_loss = chunked_linear_cross_entropy(
+                    hidden, target.head.weight, y, ce_chunk_size
+                )
+            else:
+                logits = model(x, n_loops=n_loops)
+                ce_loss = F.cross_entropy(
+                    logits.reshape(-1, cfg.vocab_size), y.reshape(-1)
+                )
+            loss = ce_loss + model._last_aux_loss
         loss.backward()
         return float(loss.detach())
 
@@ -243,6 +255,12 @@ def main() -> None:
         choices=["inductor", "eager", "aot_eager"],
         help="Use eager only for local graph/recompile smoke checks",
     )
+    parser.add_argument(
+        "--ce_chunk_size",
+        type=int,
+        default=0,
+        help="Checkpoint tied LM-head CE in token chunks; 0 uses full logits",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--json_out")
     parser.add_argument("--allow_unsafe_checkpoint", action="store_true")
@@ -254,6 +272,8 @@ def main() -> None:
         parser.error("--steps, --batch_size, --seq_len, and --n_loops must be >= 1")
     if args.warmup < 0:
         parser.error("--warmup must be >= 0")
+    if args.ce_chunk_size < 0:
+        parser.error("--ce_chunk_size must be >= 0")
 
     requested_device = torch.device(args.device)
     if requested_device.type == "cuda" and not torch.cuda.is_available():
@@ -289,6 +309,7 @@ def main() -> None:
         result = _benchmark_mode(
             model, cfg, batches, device, amp_dtype, args.n_loops,
             args.warmup, compile_model, args.seed, args.compile_backend,
+            args.ce_chunk_size,
         )
         results.append(result)
         print(
@@ -324,6 +345,7 @@ def main() -> None:
             "n_loops": args.n_loops,
             "grad_checkpoint": args.grad_checkpoint,
             "compile_backend": args.compile_backend,
+            "ce_chunk_size": args.ce_chunk_size,
             "seed": args.seed,
         },
         "results": [asdict(result) for result in results],

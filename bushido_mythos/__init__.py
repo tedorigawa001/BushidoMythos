@@ -12,6 +12,7 @@ from bushido_mythos.main import (
     RMSNorm,
     TransformerBlock,
     apply_rope,
+    chunked_linear_cross_entropy,
     loop_index_embedding,
     precompute_rope_freqs,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "BushidoMythos",
     "precompute_rope_freqs",
     "apply_rope",
+    "chunked_linear_cross_entropy",
     "loop_index_embedding",
     "mythos_tiny",
     "mythos_1b",

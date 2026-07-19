@@ -16,6 +16,7 @@ from bushido_mythos.main import (
     TransformerBlock,
     _KVCache,
     apply_rope,
+    chunked_linear_cross_entropy,
     loop_index_embedding,
     precompute_rope_freqs,
 )
@@ -57,6 +58,88 @@ def gqa_cfg(**overrides) -> MythosConfig:
 
 def mla_cfg(**overrides) -> MythosConfig:
     return gqa_cfg(attn_type="mla", **overrides)
+
+
+class TestChunkedLinearCrossEntropy:
+    @pytest.mark.parametrize("use_mask", [False, True])
+    def test_loss_and_gradients_match_full_logits(self, use_mask):
+        torch.manual_seed(0)
+        hidden_base = torch.randn(2, 5, 7, requires_grad=True)
+        weight_base = torch.randn(13, 7, requires_grad=True)
+        targets = torch.randint(0, 13, (2, 5))
+        mask = None
+        if use_mask:
+            mask = torch.tensor(
+                [[False, True, True, False, True], [True, False, True, True, False]]
+            )
+
+        logits = torch.nn.functional.linear(hidden_base, weight_base)
+        per_token = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, 13), targets.reshape(-1), reduction="none"
+        )
+        if mask is None:
+            expected = per_token.mean()
+        else:
+            mask_f = mask.reshape(-1).float()
+            expected = (per_token * mask_f).sum() / mask_f.sum()
+        expected.backward()
+
+        hidden_chunked = hidden_base.detach().clone().requires_grad_(True)
+        weight_chunked = weight_base.detach().clone().requires_grad_(True)
+        actual = chunked_linear_cross_entropy(
+            hidden_chunked,
+            weight_chunked,
+            targets,
+            chunk_size=3,
+            loss_mask=mask,
+        )
+        actual.backward()
+
+        assert torch.allclose(actual, expected.detach(), atol=1e-6, rtol=1e-6)
+        assert torch.allclose(
+            hidden_chunked.grad, hidden_base.grad, atol=1e-6, rtol=1e-5
+        )
+        assert torch.allclose(
+            weight_chunked.grad, weight_base.grad, atol=1e-6, rtol=1e-5
+        )
+
+    def test_all_masked_returns_zero_loss_and_gradients(self):
+        hidden = torch.randn(2, 3, 4, requires_grad=True)
+        weight = torch.randn(11, 4, requires_grad=True)
+        targets = torch.randint(0, 11, (2, 3))
+        mask = torch.zeros_like(targets, dtype=torch.bool)
+
+        loss = chunked_linear_cross_entropy(
+            hidden, weight, targets, chunk_size=2, loss_mask=mask
+        )
+        loss.backward()
+
+        assert loss.item() == 0.0
+        assert torch.count_nonzero(hidden.grad) == 0
+        assert torch.count_nonzero(weight.grad) == 0
+
+    def test_bfloat16_loss_and_gradients_are_finite(self):
+        hidden = torch.randn(2, 3, 8, dtype=torch.bfloat16, requires_grad=True)
+        weight = torch.randn(17, 8, dtype=torch.bfloat16, requires_grad=True)
+        targets = torch.randint(0, 17, (2, 3))
+
+        loss = chunked_linear_cross_entropy(
+            hidden, weight, targets, chunk_size=2
+        )
+        loss.backward()
+
+        assert torch.isfinite(loss)
+        assert torch.isfinite(hidden.grad).all()
+        assert torch.isfinite(weight.grad).all()
+
+    def test_rejects_shape_mismatch(self):
+        with pytest.raises(ValueError, match="hidden/targets shape mismatch"):
+            chunked_linear_cross_entropy(
+                torch.randn(2, 3, 4),
+                torch.randn(11, 4),
+                torch.zeros(2, 2, dtype=torch.long),
+                chunk_size=2,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +705,20 @@ class TestBushidoMythosGQA:
     def test_forward_no_nan(self):
         logits = self.model(self.ids)
         assert not torch.isnan(logits).any()
+
+    def test_return_hidden_matches_full_logits(self):
+        with torch.no_grad():
+            hidden = self.model(self.ids, n_loops=2, return_hidden=True)
+            projected = self.model.head(hidden)
+            logits = self.model(self.ids, n_loops=2)
+        assert hidden.shape == (B, T, self.cfg.dim)
+        assert torch.allclose(projected, logits, atol=1e-5)
+
+    def test_return_hidden_rejects_logits_to_keep(self):
+        with pytest.raises(ValueError, match="cannot be combined"):
+            self.model(
+                self.ids, n_loops=1, return_hidden=True, logits_to_keep=1
+            )
 
     def test_generate_shape(self):
         out = self.model.generate(self.ids, max_new_tokens=4, n_loops=2)

@@ -15,6 +15,91 @@ except ImportError:
     _HAS_FLASH_ATTN = False
 
 
+def chunked_linear_cross_entropy(
+    hidden: torch.Tensor,
+    weight: torch.Tensor,
+    targets: torch.Tensor,
+    chunk_size: int,
+    loss_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Compute tied LM-head cross entropy without retaining full-vocabulary logits.
+
+    Each token chunk is activation-checkpointed, so its logits are discarded after
+    the forward pass and recomputed during backward. This trades one extra LM-head
+    projection for peak memory proportional to ``chunk_size * vocab_size`` instead
+    of ``batch * sequence * vocab_size``.
+    """
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be at least 1")
+    if hidden.shape[:-1] != targets.shape:
+        raise ValueError(
+            f"hidden/targets shape mismatch: {hidden.shape[:-1]} vs {targets.shape}"
+        )
+    if weight.ndim != 2 or weight.shape[1] != hidden.shape[-1]:
+        raise ValueError(
+            f"weight shape {weight.shape} is incompatible with hidden dim {hidden.shape[-1]}"
+        )
+    if loss_mask is not None and loss_mask.shape != targets.shape:
+        raise ValueError(
+            f"loss_mask/targets shape mismatch: {loss_mask.shape} vs {targets.shape}"
+        )
+
+    flat_hidden = hidden.reshape(-1, hidden.shape[-1])
+    flat_targets = targets.reshape(-1)
+    flat_mask = loss_mask.reshape(-1) if loss_mask is not None else None
+
+    def unmasked_chunk_loss(
+        hidden_chunk: torch.Tensor,
+        head_weight: torch.Tensor,
+        target_chunk: torch.Tensor,
+    ) -> torch.Tensor:
+        logits = F.linear(hidden_chunk, head_weight)
+        return F.cross_entropy(logits, target_chunk, reduction="sum")
+
+    def masked_chunk_loss(
+        hidden_chunk: torch.Tensor,
+        head_weight: torch.Tensor,
+        target_chunk: torch.Tensor,
+        mask_chunk: torch.Tensor,
+    ) -> torch.Tensor:
+        logits = F.linear(hidden_chunk, head_weight)
+        per_token = F.cross_entropy(logits, target_chunk, reduction="none")
+        return (per_token * mask_chunk.to(per_token.dtype)).sum()
+
+    total = None
+    checkpoint_chunks = torch.is_grad_enabled() and (
+        flat_hidden.requires_grad or weight.requires_grad
+    )
+    for start in range(0, flat_targets.numel(), chunk_size):
+        end = min(start + chunk_size, flat_targets.numel())
+        hidden_chunk = flat_hidden[start:end]
+        target_chunk = flat_targets[start:end]
+        if flat_mask is None:
+            args = (hidden_chunk, weight, target_chunk)
+            chunk_loss = (
+                _grad_ckpt(unmasked_chunk_loss, *args, use_reentrant=False)
+                if checkpoint_chunks
+                else unmasked_chunk_loss(*args)
+            )
+        else:
+            mask_chunk = flat_mask[start:end]
+            args = (hidden_chunk, weight, target_chunk, mask_chunk)
+            chunk_loss = (
+                _grad_ckpt(masked_chunk_loss, *args, use_reentrant=False)
+                if checkpoint_chunks
+                else masked_chunk_loss(*args)
+            )
+        total = chunk_loss if total is None else total + chunk_loss
+
+    if total is None:
+        raise ValueError("targets must contain at least one token")
+    if flat_mask is None:
+        denominator = flat_targets.numel()
+    else:
+        denominator = flat_mask.to(dtype=torch.float32).sum().clamp_min(1.0)
+    return total / denominator
+
+
 class _KVCache(dict):
     """Dictionary-compatible KV cache with an optional allocation capacity."""
 
@@ -1456,6 +1541,7 @@ class BushidoMythos(nn.Module):
         start_pos: int = 0,
         inputs_embeds: Optional[torch.Tensor] = None,
         logits_to_keep: Optional[int] = None,
+        return_hidden: bool = False,
     ) -> torch.Tensor:
         """
         Forward pass through Prelude → Recurrent Block → Coda.
@@ -1472,9 +1558,12 @@ class BushidoMythos(nn.Module):
             inputs_embeds -- pre-computed embeddings (B, T, dim); bypasses the token
                              embedding lookup. Used by generate_coconut() to feed the
                              last hidden state directly as the next input (COCONUT).
+            return_hidden -- return normalized hidden states before the tied LM head;
+                             intended for memory-efficient training losses
 
         Returns:
-            Logits of shape (B, T, vocab_size).
+            Logits of shape (B, T, vocab_size), or normalized hidden states of
+            shape (B, T, dim) when return_hidden=True.
             Side effects: self._last_hidden stores the pre-lm-head hidden state;
             self._last_aux_loss stores the scaled ACT ponder cost.
         """
@@ -1539,6 +1628,10 @@ class BushidoMythos(nn.Module):
 
         hidden = self.norm(x)
         self._last_hidden = hidden
+        if return_hidden:
+            if logits_to_keep is not None:
+                raise ValueError("return_hidden cannot be combined with logits_to_keep")
+            return hidden
         if logits_to_keep is not None:
             if logits_to_keep < 1:
                 raise ValueError("logits_to_keep must be at least 1")

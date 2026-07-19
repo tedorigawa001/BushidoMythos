@@ -150,6 +150,10 @@ ColabのDriveへ大きなcheckpointを直接、頻繁に保存すると、serial
 
 候補にはLiger Kernel系のfused linear cross entropyがあります。ただしcustom autogradを導入する場合は、weight tyingとmixed precisionのgradient精度を重点的に検証します。
 
+追加依存なしのfallbackとして、tied LM headとCEをtoken軸でchunk化し、各chunkをactivation checkpointする経路を実装しました。forwardでchunk logitsを破棄してbackward時にLM headを再計算するため、保持logitsは`B*T*vocab_size`から最大`ce_chunk_size*vocab_size`になります。通常の`forward()`は全logitsを返し、`training/finance_pretrain.py --ce_chunk_size N`を指定した場合だけhidden-state経路を使用します。既定0は従来動作です。
+
+CPU fp32ではmaskなし・部分mask・全maskについてloss、hidden gradient、tied weight gradientの一致を確認済みです。A100の`ce_chunk_size=1024`計測では、compile経路が33,561 tokens/sec、peak 1353 MiB、計測区間の追加graph/breakは0、loss差0.00154114でした。full-logits compile（37,564 tokens/sec、3137 MiB）比で速度は10.7%低下し、peak VRAMは1784 MiB（56.9%）減りました。このfallbackは通常runの高速化としては不採用とし、OOM回避またはmicrobatch拡大で総throughputを回復できる場合に限定します。通常は`ce_chunk_size=0`を維持し、速度とメモリを同時改善する候補としてLiger等のCUDA fused kernelを別途評価します。
+
 ### 検証
 
 - fp32でlossとgradientがbaselineに一致する。

@@ -650,6 +650,10 @@ Tokenizes `rows` once and writes the result to `cache_path`. On subsequent runs 
 
 `__iter__` raises `ValueError` if the token count is too small for the given `seq_len` (catches misconfigured or missing datasets early). Each batch yields `(x, y)` where `y` is `x` shifted left by one token.
 
+#### Memory-efficient linear cross entropy
+
+`chunked_linear_cross_entropy(hidden, weight, targets, chunk_size, loss_mask=None)` computes tied LM-head cross entropy without retaining full `(B, T, vocab_size)` logits. Each token chunk is activation-checkpointed and its LM-head projection is recomputed during backward. `BushidoMythos.forward(..., return_hidden=True)` supplies the normalized pre-head hidden states; the default forward API remains unchanged and returns logits.
+
 #### `save_checkpoint` / `load_checkpoint`
 
 ```python

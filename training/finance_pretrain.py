@@ -86,7 +86,11 @@ class _Tee:
 repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
-from bushido_mythos import MythosConfig, BushidoMythos
+from bushido_mythos import (
+    BushidoMythos,
+    MythosConfig,
+    chunked_linear_cross_entropy,
+)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1025,6 +1029,7 @@ def run_phase(
         del _ckpt
 
     grad_accum = getattr(args, 'grad_accum_steps', 1)
+    ce_chunk_size = getattr(args, "ce_chunk_size", 0)
     eff_batch  = args.batch_size * grad_accum
 
     print(f"\n{'='*60}")
@@ -1114,8 +1119,17 @@ def run_phase(
                                      anchor_step=act_anchor_step)
 
             with torch.autocast(autocast_device, dtype=amp_dtype, enabled=use_amp):
-                logits = model(x, n_loops=n_loops)
-                if loss_mask is not None and loss_mask.any():
+                if ce_chunk_size > 0:
+                    hidden = model(x, n_loops=n_loops, return_hidden=True)
+                    ce_loss = chunked_linear_cross_entropy(
+                        hidden,
+                        getattr(model, "_orig_mod", model).head.weight,
+                        y,
+                        chunk_size=ce_chunk_size,
+                        loss_mask=loss_mask,
+                    )
+                elif loss_mask is not None and loss_mask.any():
+                    logits = model(x, n_loops=n_loops)
                     ce_per_tok = F.cross_entropy(
                         logits.reshape(-1, cfg.vocab_size),
                         y.reshape(-1),
@@ -1124,6 +1138,7 @@ def run_phase(
                     mask_f = loss_mask.reshape(-1).float()
                     ce_loss = (ce_per_tok * mask_f).sum() / (mask_f.sum() + 1e-9)
                 else:
+                    logits = model(x, n_loops=n_loops)
                     ce_loss = F.cross_entropy(
                         logits.reshape(-1, cfg.vocab_size),
                         y.reshape(-1),
@@ -1594,6 +1609,9 @@ def parse_args() -> argparse.Namespace:
                    help="Enable gradient checkpointing in the recurrent loop. "
                         "Reduces VRAM ~proportionally to loop depth (e.g. 7x for 8 loops) "
                         "at the cost of ~30-40%% extra compute. Recommended when OOM.")
+    p.add_argument("--ce_chunk_size", type=int, default=0,
+                   help="Checkpoint tied LM-head cross entropy in token chunks. "
+                        "0 disables it; 1024 is a practical A100 starting point.")
     p.add_argument("--optim8bit", action="store_true",
                    help="bitsandbytes の 8-bit AdamW を使う（オプティマイザ状態を 8-bit 量子化、"
                         "8→2 byte/param に削減・ほぼ無損失）。CUDA/bitsandbytes が無い場合は"
@@ -1646,6 +1664,8 @@ def parse_args() -> argparse.Namespace:
     args = p.parse_args()
     if args.grad_accum_steps < 1:
         p.error(f"--grad_accum_steps must be >= 1 (got {args.grad_accum_steps})")
+    if args.ce_chunk_size < 0:
+        p.error(f"--ce_chunk_size must be >= 0 (got {args.ce_chunk_size})")
     if args.loop_schedule == "curriculum":
         if args.loop_tail_max < 1:
             p.error(f"--loop_tail_max must be >= 1 (got {args.loop_tail_max})")
