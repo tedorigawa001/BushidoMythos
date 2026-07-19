@@ -174,7 +174,10 @@ finance 評価(sliding-window、`--seq_len 256 --stride 128 --eval_max_chunks 30
 - **`--compile` との両立は実装済み**: `act_threshold`とponder weightを非永続の0次元
   tensor bufferへ移し、in-place更新する。Python float guardを作らないため、Colab notebookは
   `ACT_CURRICULUM=True`のまま対応GPUで`USE_COMPILE=True`を利用できる。Dynamo compile counter
-  ではbuffer更新による追加compileなしを確認済みで、CUDA wall-clock実測は今後行う。
+  ではbuffer更新による追加compileなしを確認済み。A100/batch 16/seq 256/8 loops/gradient
+  checkpointingの定常計測3回では、計測区間の追加graph/breakはすべて0、中央値はeager
+  35,360 tokens/secに対してcompile 38,054 tokens/sec（1.075倍）、peak VRAMは3292から
+  3137 MiB、最大loss差は0.00154114だった。総wall-clock効果はphaseログで別途確認する。
   **恒久対応**は `act_threshold` / `act_aux_loss_weight` を `persistent=False` の tensor buffer
   にして in-place 更新する形(buffer 読みなら値変更で再コンパイルされず、state_dict にも
   載らないので checkpoint 互換も保てる)。これは model 本体(main.py)の変更になるため別対応。
