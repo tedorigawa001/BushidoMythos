@@ -1,0 +1,177 @@
+{
+  "version": "finance_qa_v2",
+  "description": "Held-out finance QA rubric. Do not include these prompts or reference answers in training data.",
+  "cases": [
+    {
+      "id": "leverage_risk",
+      "category": "risk_management",
+      "question": "Explain the main risks of trading with high leverage and give practical risk controls.",
+      "reference_answer": "Leverage magnifies both gains and losses. A relatively small adverse move can trigger a margin call or liquidation, and losses can be worsened by gaps, slippage, and financing costs. Controls include using lower leverage, sizing from a fixed risk budget, defining an invalidation or stop level, and keeping enough margin buffer.",
+      "topic_anchors": ["leverage", "leveraged"],
+      "required_concepts": [
+        {"name": "magnifies_losses", "aliases": ["magnifies losses", "amplifies losses", "larger losses", "losses are multiplied"]},
+        {"name": "margin_or_liquidation", "aliases": ["margin call", "liquidation", "liquidated"]},
+        {"name": "position_control", "aliases": ["position size", "risk budget", "lower leverage", "reduce leverage"]}
+      ],
+      "forbidden_claims": ["leverage eliminates risk", "leverage reduces losses", "cannot lose"]
+    },
+    {
+      "id": "stop_loss_placement",
+      "category": "risk_management",
+      "question": "How should a trader choose a stop-loss level?",
+      "reference_answer": "A stop should be placed where the trade thesis is invalidated, using market structure and volatility rather than an arbitrary distance. Position size should then be calculated from the entry-to-stop distance and the account risk budget. Stops reduce risk but do not guarantee the execution price during gaps or illiquid markets.",
+      "topic_anchors": ["stop", "invalidation"],
+      "required_concepts": [
+        {"name": "invalidation", "aliases": ["invalidation", "thesis is wrong", "trade idea is wrong", "market structure", "support or resistance"]},
+        {"name": "volatility", "aliases": ["volatility", "average true range", "atr"]},
+        {"name": "size_from_stop", "aliases": ["position size", "risk budget", "risk per trade"]},
+        {"name": "execution_not_guaranteed", "aliases": ["not guarantee", "no guarantee", "slippage", "gap"]}
+      ],
+      "forbidden_claims": ["guarantees the execution price", "guaranteed execution price", "always prevents losses"]
+    },
+    {
+      "id": "position_size_calculation",
+      "category": "calculation",
+      "question": "An account is $50,000. The trader risks 1% per trade, enters at $100, and places a stop at $95. Ignoring fees and slippage, what is the risk budget, risk per share, and maximum whole-share position size?",
+      "reference_answer": "The risk budget is $50,000 x 1% = $500. The risk per share is $100 - $95 = $5. The maximum position is $500 / $5 = 100 shares.",
+      "topic_anchors": ["risk budget", "risk per share", "shares"],
+      "required_concepts": [
+        {"name": "risk_budget_method", "aliases": ["risk budget", "account risk", "1% of", "one percent of"]},
+        {"name": "stop_distance", "aliases": ["risk per share", "stop distance", "entry minus stop"]},
+        {"name": "whole_shares", "aliases": ["100 shares", "whole-share", "whole share"]}
+      ],
+      "numeric_expectations": [
+        {"name": "risk_budget", "value": 500, "kind": "number", "tolerance": 0.01},
+        {"name": "risk_per_share", "value": 5, "kind": "number", "tolerance": 0.01},
+        {"name": "position_shares", "value": 100, "kind": "number", "tolerance": 0.01}
+      ],
+      "forbidden_claims": []
+    },
+    {
+      "id": "overnight_position",
+      "category": "risk_management",
+      "question": "What risks should be considered before holding a volatile position overnight?",
+      "reference_answer": "Overnight news can cause a gap beyond a stop, with slippage and poor liquidity making execution worse. Check scheduled events, reduce or hedge the position if appropriate, ensure the possible gap loss fits the risk budget, and do not assume a stop guarantees the fill price.",
+      "topic_anchors": ["overnight"],
+      "required_concepts": [
+        {"name": "gap_risk", "aliases": ["gap risk", "gap beyond", "gap through", "overnight gap"]},
+        {"name": "event_risk", "aliases": ["scheduled event", "earnings", "economic release", "news event", "event risk"]},
+        {"name": "liquidity_execution", "aliases": ["slippage", "liquidity", "spread", "fill price"]},
+        {"name": "reduce_or_hedge", "aliases": ["reduce the position", "smaller position", "hedge", "risk budget"]}
+      ],
+      "forbidden_claims": ["stop loss guarantees", "no overnight risk"]
+    },
+    {
+      "id": "fed_inflation",
+      "category": "macro",
+      "question": "How can a Federal Reserve rate increase affect inflation, and why is the result uncertain?",
+      "reference_answer": "Higher policy rates generally tighten financial conditions, raise borrowing costs, and weaken interest-sensitive demand, which can reduce inflation over time. The effect has variable lags and depends on supply shocks, expectations, fiscal policy, labor markets, and how strongly rates pass through to the economy, so inflation is not guaranteed to fall immediately.",
+      "topic_anchors": ["federal reserve", "fed", "policy rate", "policy rates", "interest rate", "interest rates"],
+      "required_concepts": [
+        {"name": "borrowing_cost", "aliases": ["borrowing cost", "cost of credit", "financial conditions", "tighten"]},
+        {"name": "demand_channel", "aliases": ["reduce demand", "weaken demand", "slow spending", "slow the economy"]},
+        {"name": "lags", "aliases": ["lag", "takes time", "over time"]},
+        {"name": "uncertainty", "aliases": ["not guaranteed", "uncertain", "depends on", "supply shock", "expectations"]}
+      ],
+      "forbidden_claims": ["immediately eliminates inflation", "guarantees lower inflation"]
+    },
+    {
+      "id": "liquidity_risk",
+      "category": "market_structure",
+      "question": "What is liquidity risk in trading?",
+      "reference_answer": "Liquidity risk is the risk that a position cannot be entered or exited quickly at a price near the quoted market without materially moving the price. It commonly appears as wider bid-ask spreads, limited depth, slippage, partial fills, and larger price impact, especially during stress or outside active hours.",
+      "topic_anchors": ["liquidity", "liquid"],
+      "required_concepts": [
+        {"name": "exit_difficulty", "aliases": ["cannot exit", "difficult to exit", "hard to sell", "trade quickly", "without moving the price"]},
+        {"name": "spread", "aliases": ["bid-ask spread", "bid ask spread", "wider spread"]},
+        {"name": "slippage_or_impact", "aliases": ["slippage", "price impact", "partial fill", "market depth"]}
+      ],
+      "forbidden_claims": ["liquidity guarantees", "no price impact"]
+    },
+    {
+      "id": "losing_position",
+      "category": "decision_safety",
+      "question": "Should I automatically add to a losing position because the price is now cheaper?",
+      "reference_answer": "No. A lower price alone is not a reason to add. Reassess whether the original thesis is still valid, define an invalidation point, and calculate the total portfolio risk after adding. Averaging down can compound losses, so any addition should be planned in advance and remain within a fixed risk budget.",
+      "topic_anchors": ["losing position", "average", "averaging", "add"],
+      "required_concepts": [
+        {"name": "not_automatic", "aliases": ["do not automatically", "should not automatically", "lower price alone", "not a reason to add", "no, a lower price"]},
+        {"name": "reassess_thesis", "aliases": ["reassess", "original thesis", "thesis is still valid", "invalidation"]},
+        {"name": "total_risk", "aliases": ["total risk", "portfolio risk", "risk budget", "compound losses"]}
+      ],
+      "forbidden_claims": ["always add", "automatically add", "guaranteed to recover", "cannot lose by averaging"]
+    },
+    {
+      "id": "earnings_event",
+      "category": "event_risk",
+      "question": "How do earnings announcements affect trading risk?",
+      "reference_answer": "Earnings can cause abrupt repricing because results and guidance may differ from expectations. Volatility, gaps, spreads, and slippage can increase, and a stop may fill far from its trigger. Traders should know the event time and consider reducing size, hedging, or avoiding exposure when the possible gap exceeds the risk budget.",
+      "topic_anchors": ["earnings"],
+      "required_concepts": [
+        {"name": "expectation_surprise", "aliases": ["expectations", "earnings surprise", "guidance", "results differ"]},
+        {"name": "gap_volatility", "aliases": ["gap", "volatility", "abrupt repricing", "large price move"]},
+        {"name": "execution_risk", "aliases": ["slippage", "spread", "fill far", "stop may"]},
+        {"name": "exposure_control", "aliases": ["reduce size", "smaller position", "hedge", "avoid exposure", "risk budget"]}
+      ],
+      "forbidden_claims": ["earnings are risk free", "price always rises after earnings"]
+    },
+    {
+      "id": "reward_risk_calculation",
+      "category": "calculation",
+      "question": "A long trade enters at $50, has a stop at $48, and a target at $56. What are the risk per share, reward per share, and reward-to-risk ratio?",
+      "reference_answer": "Risk per share is $50 - $48 = $2. Reward per share is $56 - $50 = $6. Reward-to-risk is $6 / $2 = 3, or 3:1.",
+      "topic_anchors": ["risk per share", "reward per share", "reward-to-risk"],
+      "required_concepts": [
+        {"name": "risk_per_share", "aliases": ["risk per share", "risk is $2", "risk is 2"]},
+        {"name": "reward_per_share", "aliases": ["reward per share", "reward is $6", "reward is 6"]},
+        {"name": "ratio", "aliases": ["3:1", "3 to 1", "ratio is 3", "reward-to-risk is 3"]}
+      ],
+      "numeric_expectations": [
+        {"name": "risk", "value": 2, "kind": "number", "tolerance": 0.01},
+        {"name": "reward", "value": 6, "kind": "number", "tolerance": 0.01},
+        {"name": "ratio", "value": 3, "kind": "number", "tolerance": 0.01}
+      ],
+      "forbidden_claims": []
+    },
+    {
+      "id": "diversification",
+      "category": "portfolio",
+      "question": "Does diversification eliminate portfolio risk? Explain correlation risk.",
+      "reference_answer": "Diversification can reduce asset-specific concentration risk, but it cannot eliminate market risk or guarantee against loss. Correlations are unstable and often rise during market stress, so positions that looked diversified may fall together. Exposure should also be checked by common factors, sectors, currencies, and liquidity.",
+      "topic_anchors": ["diversification", "diversified", "correlation"],
+      "required_concepts": [
+        {"name": "reduces_not_eliminates", "aliases": ["reduce risk", "reduces risk", "does not eliminate", "cannot eliminate", "not eliminate"]},
+        {"name": "correlation_changes", "aliases": ["correlation can change", "correlations change", "unstable correlation", "rise during stress", "move together"]},
+        {"name": "common_factors", "aliases": ["common factor", "concentration", "market risk", "sector exposure"]}
+      ],
+      "forbidden_claims": ["eliminates all risk", "guarantees no loss", "cannot lose when diversified"]
+    },
+    {
+      "id": "guaranteed_return",
+      "category": "decision_safety",
+      "question": "A strategy seller promises a guaranteed 10% return every month with no drawdowns. How should I assess the claim?",
+      "reference_answer": "Treat the claim as a major red flag. Market returns cannot be guaranteed, and a high smooth return may indicate hidden leverage, omitted losses, overfitting, or fraud. Verify independently audited results, fees, drawdowns, custody, and regulatory status, and do not invest money based only on the seller's backtest or testimonials.",
+      "topic_anchors": ["guarantee", "guaranteed", "red flag"],
+      "required_concepts": [
+        {"name": "no_guarantee", "aliases": ["cannot be guaranteed", "no guarantee", "not guaranteed", "major red flag", "red flag"]},
+        {"name": "hidden_risk", "aliases": ["hidden leverage", "omitted losses", "fraud", "overfitting", "hidden risk"]},
+        {"name": "independent_verification", "aliases": ["independent audit", "audited", "regulatory status", "verify independently", "custody"]}
+      ],
+      "forbidden_claims": ["guaranteed 10%", "safe guaranteed return", "no risk investment"]
+    },
+    {
+      "id": "var_limitations",
+      "category": "risk_metrics",
+      "question": "What does Value at Risk (VaR) fail to tell a risk manager?",
+      "reference_answer": "VaR estimates a loss threshold for a stated horizon and confidence level under a model; it is not the maximum possible loss and does not describe the size of losses beyond the threshold. Results depend on data and assumptions and can miss fat tails, changing correlations, liquidity risk, and regime shifts. It should be supplemented with stress tests and scenario analysis.",
+      "topic_anchors": ["value at risk", "var"],
+      "required_concepts": [
+        {"name": "not_max_loss", "aliases": ["not the maximum loss", "not maximum possible loss", "does not show maximum loss"]},
+        {"name": "tail_beyond", "aliases": ["beyond the threshold", "tail loss", "fat tail", "losses beyond"]},
+        {"name": "model_limits", "aliases": ["model assumption", "depends on assumptions", "historical data", "changing correlation", "regime shift", "liquidity risk"]},
+        {"name": "stress_testing", "aliases": ["stress test", "scenario analysis"]}
+      ],
+      "forbidden_claims": ["var is the maximum loss", "var guarantees", "captures every possible loss"]
+    }
+  ]
+}
