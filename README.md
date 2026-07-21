@@ -66,8 +66,8 @@ BushidoMythos adds a dedicated 5-phase training pipeline for financial-trading a
 | **1** | WikiText-103 (~115M tokens) | General-language fluency and grammar grounding |
 | **2** | OpenWebMath + Orca Math + optional Dolly | Quantitative reasoning, stepwise decomposition, logical structure |
 | **3** | Financial news + finance-alpaca | Financial-domain vocabulary, instruction-response formatting |
-| **4** | FinGPT forecaster + FinGPT sentiment | Trading-method SFT for market forecasting and sentiment |
-| **5** | FinGPT FIQA QA | Risk-management tuning: disclosure, uncertainty, verification-aware responses |
+| **4** | Optional FinGPT forecaster + sentiment experiment | Disabled by default after both controlled variants degraded broad Finance QA |
+| **5** | Audited local Finance QA pilot | Risk-management and calculation SFT; disabled pending adoption |
 
 From Phase 3 onward, SFT-style data is formatted as:
 
@@ -133,7 +133,7 @@ because the selected SDPA backend depends on the installed PyTorch and CUDA vers
 
 A new top-level script [`chat.py`](chat.py) provides an interactive REPL for trained checkpoints. Key capabilities:
 
-- Automatic checkpoint selection (priority: `phase5_final.pt` → `phase4_final.pt` → … → latest `step_*.pt`)
+- Automatic checkpoint selection (temporary quality-safe priority: `phase3_final.pt` → `phase5_final.pt` → `phase4_final.pt` → … → latest `step_*.pt`)
 - `--finance_mode`: wraps user input in `### Instruction: / ### Response:` format with a risk-aware suffix
 - `--tokenizer auto / gpt2 / mythos`: tokenizer selection with verified GPT-2 loading (tests actual encoding before accepting the tokenizer)
 - Prompt truncation: left-side truncation keeps the most recent context when the prompt exceeds `max_seq_len - max_new_tokens`
@@ -362,8 +362,8 @@ torchrun --nproc_per_node=$(python -c "import torch; print(torch.cuda.device_cou
 | **Phase 1** | WikiText-103 (about 115M tokens) | 20,000 | General-language fluency |
 | **Phase 2** | `open-web-math/open-web-math` + `microsoft/orca-math-word-problems-200k` + `databricks/databricks-dolly-15k` | 8,000 | Reasoning reinforcement: quantitative reasoning, stepwise decomposition, and logical explanatory structure |
 | **Phase 3** | `ashraq/financial-news-articles` + `gbharti/finance-alpaca` | 8,000 | Financial-domain vocabulary and instruction-response formatting |
-| **Phase 4** | `FinGPT/fingpt-forecaster-dow30-202305-202405` (about 1.2K) + `FinGPT/fingpt-sentiment-train` (about 76K) | 3,000 | Trading-method SFT for market forecasting and sentiment analysis |
-| **Phase 5** | `FinGPT/fingpt-fiqa_qa` (about 17K QA examples) | 3,000 | Final risk-management tuning for disclosure, uncertainty, and verification-aware responses |
+| **Phase 4** | Optional FinGPT forecaster/sentiment task-specific SFT | 0 | Disabled by default: forecaster-only and balanced-sentiment pilots both degraded held-out broad Finance QA |
+| **Phase 5** | Local audited risk-management/calculation SFT; FIQA is an opt-in comparison source | 0 | Disabled until the curated 500-step pilot passes the held-out adoption gate |
 
 Phase 3 and later use a fixed prompt format:
 
@@ -378,7 +378,7 @@ Explain risk management in trading.
 **Basic usage:**
 
 ```bash
-# Run all phases (Phase 1 -> 5)
+# Run the safe default schedule (Phase 1 -> 3; Phases 4-5 are disabled)
 python3.9 training/finance_pretrain.py --phase 0
 
 # Resume after interruption from the latest step_*.pt in --ckpt_dir
@@ -394,10 +394,11 @@ python3.9 training/finance_pretrain.py \
   --phase 4 \
   --resume checkpoints/finance_a100_v2/phase3_final.pt
 
-# Phase 5 only, after Phase 4 completes
+# Low-level controlled Phase 5 pilot (the dedicated runner below is preferred)
 python3.9 training/finance_pretrain.py \
   --phase 5 \
-  --resume checkpoints/finance_a100_v2/phase4_final.pt
+  --resume checkpoints/finance_a100_v2/phase3_final.pt \
+  --phase5_steps 500 --phase5_data_mode curated
 ```
 
 **Recommended Google Colab setup:** save checkpoints to Google Drive to avoid losing data when a session disconnects. The Drive path is controlled by the `REPO` variable near the top of the notebook, so adjust it for your environment, such as `MyDrive/OpenMythos-main` or `Othercomputers/My Mac/OpenMythos-main`.
@@ -414,6 +415,8 @@ python training/finance_pretrain.py \
 
 `--cache_dir /content/cache` stores tokenized data on Colab's fast NVMe storage. It is rebuilt in about two minutes in a new session. Putting the cache on Drive can skip regeneration, but Drive writes are slower.
 
+To start a complete new training run, use a new empty `--ckpt_dir`/`--local_ckpt_dir` pair. Deleting tokenized datasets does not reset training because `--auto_resume` is controlled by checkpoints, not the dataset cache. The Colab notebook uses `FRESH_RUN_NAME = "finance_a100_v3_full"`; keep that name when resuming an interrupted v3 run, and increment it only when intentionally starting another run from phase 1. Existing v2 checkpoints remain available as the comparison baseline.
+
 **Main options:**
 
 | Flag | Default | Description |
@@ -422,13 +425,23 @@ python training/finance_pretrain.py \
 | `--ckpt_dir` | `checkpoints/finance_a100_v2` | Checkpoint output directory |
 | `--local_ckpt_dir` | unset | Write checkpoints atomically to this local directory, then copy them asynchronously to `--ckpt_dir`. Intended for Colab NVMe plus Drive |
 | `--keep_local_completed` | `1` | Number of successfully copied periodic `step_*.pt` files retained locally. Phase/final checkpoints are not removed |
-| `--wall_clock_json` | `<ckpt_dir>/wall_clock_phaseN.json` | Atomic JSON report for total/phase wall-clock, dataset build, data wait, optimizer, checkpoint serialization, and asynchronous copy metrics |
+| `--wall_clock_json` | unique file under `<ckpt_dir>` | Atomic JSON report for total/phase wall-clock, dataset build, data wait, optimizer, checkpoint serialization, and asynchronous copy metrics. The default name includes phase, measured step range, and process start time so resumed segments are not overwritten |
 | `--phase` | `0` | `0` = all phases / `1` to `5` = one phase only |
 | `--phase1_steps` | `20000` | Phase 1 step count |
 | `--phase2_steps` | `8000` | Phase 2 step count for reasoning reinforcement |
 | `--phase3_steps` | `8000` | Phase 3 step count for finance domain + instruction format |
-| `--phase4_steps` | `3000` | Phase 4 step count for trading-method SFT |
-| `--phase5_steps` | `3000` | Phase 5 step count for risk-management QA and final tuning |
+| `--phase4_steps` | `0` | Optional task-specific Phase 4 steps. Broad Finance QA pilots do not justify enabling it |
+| `--phase4_sentiment_ratio` | `0.0` | Maximum sentiment rows relative to forecaster rows. `0` = forecaster-only, `1` = equal counts, `-1` = all sentiment rows |
+| `--phase4_unbalanced_sentiment` | `False` | Disable round-robin response-label balancing for the selected sentiment rows |
+| `--phase4_max_response_share` | `0.20` | Stop before training if one exact Phase 4 response exceeds this fraction of examples |
+| `--phase5_steps` | `0` | Phase 5 step count; assign explicitly only for a controlled pilot |
+| `--phase5_data_mode` | `curated` | `curated`, `fiqa`, or `mixed`; remote FIQA modes are explicit comparisons |
+| `--phase5_curated_path` | `training/train_data/finance_qa_curated_v2_train.json` | Family-disjoint project-authored Phase 5 training examples |
+| `--phase5_validation_path` | `training/eval_data/finance_qa_curated_v2_validation.json` | Validation split used for leakage auditing; it is never added to training batches |
+| `--phase5_eval_suite` | `training/eval_data/finance_qa_v2.json` | Held-out suite used only to reject lexical overlap |
+| `--phase5_max_similarity` | `0.80` | Reject train/eval instruction or response pairs at or above this lexical similarity |
+| `--phase5_max_response_share` | `0.10` | Reject data when one exact answer exceeds this share |
+| `--phase5_audit_json` | `<ckpt_dir>/phase5_data_audit.json` | Train/validation source hashes, family separation, response profile, and held-out overlap evidence |
 | `--auto_resume` | `False` | Automatically resume from the latest `step_*.pt` in `--ckpt_dir` |
 | `--batch_size` | `4` | Microbatch size |
 | `--grad_accum_steps` | `1` | Gradient accumulation steps. Effective batch = `batch_size x grad_accum_steps` (`>= 1`) |
@@ -637,7 +650,7 @@ OOM root-cause guide:
 
 ![Training Loss Curve](loss_curve.png)
 
-Each phase transition causes a temporary loss spike as the model adapts to a new data distribution, followed by rapid convergence. Phase 4 (TradingMethodology) achieves a very low loss on the small FinGPT SFT dataset; Phase 5 (TradingQA) normalizes the loss as the model generalizes to QA-style risk-management examples. The loss curve can be regenerated from any `train.log` with `python training/plot_loss.py`.
+Each phase transition causes a temporary loss spike as the model adapts to a new data distribution, followed by rapid convergence. The historical Phase 4 run achieved low training loss but collapsed held-out outputs to `neutral`, demonstrating that in-domain loss alone was misleading. Phase 4 is therefore disabled by default; the production path continues from Phase 3 to a redesigned Phase 5. The loss curve can be regenerated from any `train.log` with `python training/plot_loss.py`.
 
 Tests: [`tests/test_finance_pretrain.py`](tests/test_finance_pretrain.py) covers `TextDataset`, `lr_lambda`, checkpoint save/load, phase-skip logic, and related behavior.
 
@@ -670,7 +683,7 @@ This project assumes **Google Colab Pro+ with A100 recommended** for the full tr
    | **Cell 3: Starting checkpoint** | Create `a100_v2_gpt2vocab/final.pt` once through `training/make_base_ckpt.py` (dim=768, n_experts=28, expert_dim=768, about 99M params, GPT-2 initialized, ACT enabled) |
    | **Cells 4-5: Phase 1** | Train general language on WikiText-103, about 4-6 hours on A100 |
    | **Cells 6-7: Phase 2** | Reinforce reasoning with OpenWebMath + Orca Math + optional Dolly, about 2-3 hours on A100 |
-   | **Cells 8-9: Phase 3 & 4** | Finance-domain mix + trading-method SFT, about 3-4 hours on A100 |
+   | **Cells 8-9: Phase 3 & optional Phase 4** | Finance-domain mix; Phase 4 remains disabled outside explicit experiments |
    | **Cell 10: Phase 5** | Risk-management QA final tuning, about 1 hour on A100 |
    | **Cell 11: Inference test** | Verify the trained checkpoint |
 
@@ -694,7 +707,7 @@ This project assumes **Google Colab Pro+ with A100 recommended** for the full tr
 
    Only the last `KEEP_LAST_N_STEPS` (default 3, notebook GPU-settings cell) periodic `step_*.pt` checkpoints are kept on Drive — older ones are deleted automatically as new ones are saved, to bound Drive usage. `phaseN_final.pt`/`final.pt` are never rotated out.
 
-   Each run also writes `wall_clock_phaseN.json` on Drive. Use `total_wall_seconds` and each entry in `phases` for end-to-end comparisons; `checkpoint_serializations` and `async_checkpoint_copy.copy_seconds` separate foreground serialization from background Drive transfer.
+   Each process writes a unique `wall_clock_phaseN_stepsA-B_TIMESTAMP.json` on Drive. Interrupted and resumed segments therefore remain separate instead of overwriting one another. Use `total_wall_seconds` and each entry in `phases` for end-to-end comparisons; `checkpoint_serializations` and `async_checkpoint_copy.copy_seconds` separate foreground serialization from background Drive transfer.
 
 > **GPU selection guide:** A100 on Colab Pro+ is the best cost-performance option. T4 also works, but `--compile` is disabled and both batch size and sequence length are reduced, making training roughly 3-4x slower than A100.
 
@@ -702,7 +715,7 @@ This project assumes **Google Colab Pro+ with A100 recommended** for the full tr
 
 ## Inference Chat
 
-[`chat.py`](chat.py) provides an interactive inference loop. It automatically selects the best checkpoint from `--ckpt_dir` in this priority order: `phase5_final.pt` -> `phase4_final.pt` -> `phase3_final.pt` -> `final.pt` -> `phase2_final.pt` -> `phase1_final.pt` -> latest `step_*.pt`.
+[`chat.py`](chat.py) provides an interactive inference loop. Until a Phase 5 pilot passes the adoption gate, it automatically selects checkpoints in this quality-safe priority order: `phase3_final.pt` -> `phase5_final.pt` -> `phase4_final.pt` -> `final.pt` -> `phase2_final.pt` -> `phase1_final.pt` -> latest `step_*.pt`. Pass an experimental checkpoint explicitly with `--ckpt`.
 
 ```bash
 # Recommended: Phase 3-5 SFT uses the ### Instruction: / ### Response: format.
@@ -775,7 +788,7 @@ python3.9 training/eval_perplexity.py --compare --ckpt_dir checkpoints/finance_a
 python3.9 training/eval_perplexity.py --ckpt <path> --split test --stride 512 --dtype bfloat16
 ```
 
-When `--ckpt` is omitted, the script auto-selects the **most-trained** checkpoint in `--ckpt_dir`, in priority order `phase5_final.pt` → `phase4_final.pt` → `phase3_final.pt` → `phase2_final.pt` → `phase1_final.pt` → `final.pt`. (The `--compare` table instead lists checkpoints in training order, phase1 → final, to show the PPL progression.)
+When `--ckpt` is omitted, the script auto-selects the preferred checkpoint in `--ckpt_dir`, in priority order `phase3_final.pt` → `phase5_final.pt` → `phase4_final.pt` → `final.pt` → `phase2_final.pt` → `phase1_final.pt`. Phase 3 remains first until a later checkpoint passes the Finance QA adoption gate. (The `--compare` table instead lists checkpoints in training order, phase1 → final, to show the PPL progression.)
 
 | Flag | Default | Description |
 |---|---|---|
@@ -840,6 +853,130 @@ A Markdown report (per-prompt outputs + aggregate tables) is written to `--out` 
 | `--out` | `training/report/finance_behavior_report.md` | Markdown report path (`""` disables) |
 
 > **Reproducibility:** on Apple MPS, sampling is **not reproducible across runs** even with a fixed seed (`torch.manual_seed` / `torch.mps.manual_seed` do not make `multinomial` deterministic in current PyTorch). The CPU RNG *is* deterministic, so use `--device cpu` for numbers you intend to report. Metrics also use keyword matching over a small prompt set — treat them as directional, not exact (mention ≠ correctness).
+
+### Reference-backed finance QA
+
+[`training/eval_finance_qa.py`](training/eval_finance_qa.py) compares Phase 2-5 against the held-out [`finance_qa_v2.json`](training/eval_data/finance_qa_v2.json) rubric. The suite covers risk management, calculations, macroeconomics, market structure, portfolio risk, event risk, and unsafe claims. Each case includes a reference answer, case-specific topic anchors, required concept aliases, optional numeric expectations, and forbidden claims. A response must be on-topic before concept matches can produce a pass. Keep this suite out of all training data. The original `finance_qa_v1.json` remains unchanged for reproducing historical reports.
+
+```bash
+python3.9 training/eval_finance_qa.py \
+  --ckpts checkpoints/finance_a100_v3_full/phase2_final.pt \
+          checkpoints/finance_a100_v3_full/phase3_final.pt \
+          checkpoints/finance_a100_v3_full/phase4_final.pt \
+          checkpoints/finance_a100_v3_full/phase5_final.pt \
+  --device cuda --dtype auto --seeds 0 1 2 \
+  --json_out checkpoints/finance_a100_v3_full/finance_qa_phase2_5.json \
+  --md_out checkpoints/finance_a100_v3_full/finance_qa_phase2_5.md
+```
+
+The command fails if any requested checkpoint is missing. JSON records the suite SHA-256, runtime, generation configuration, every response, and per-rubric match details. Markdown contains aggregate and per-case Phase comparisons plus seed-0 outputs. A checkpoint is eligible only when pass rate is at least 80%, concept recall at least 75%, numeric accuracy at least 90%, unsafe-claim rate exactly 0%, and no exact response occupies more than 20% of the evaluation; no winner is selected when every checkpoint misses the gate. The score is deterministic rule-based evidence, not an LLM judge: required-concept matching can still produce false positives, so checkpoint adoption requires reviewing the generated answers.
+
+The v3 production run exposed a Phase 4 collapse: all 36 held-out responses were exactly `neutral`. That run used 1,230 forecaster examples plus all 76,772 sentiment examples. The controlled 500-step ablation from the same Phase 3 checkpoint is reproducible with:
+
+```bash
+python3.9 training/run_phase4_ablation.py \
+  --phase3_ckpt checkpoints/finance_a100_v3_full/phase3_final.pt \
+  --base_ckpt checkpoints/a100_v2_gpt2vocab/final.pt \
+  --output_root checkpoints/finance_a100_v3_phase4_ablation \
+  --local_root /content/checkpoints/finance_a100_v3_phase4_ablation
+```
+
+The runner trains `forecaster_only` and `balanced_1to1` from the same Phase 3 state, then compares Phase 3 and both pilots with the same three-seed Finance QA evaluation. It writes `finance_qa_phase4_ablation.json` and `.md` under `--output_root`. Use `--dry_run` to inspect every subprocess command without training.
+
+The A100 result rejected both variants. Phase 3 scored `0.270`; forecaster-only fell to `0.256` and reduced required-concept recall from `3.5%` to `0.7%`. Balanced 1:1 fell to `0.142`, failed the non-degeneracy gate, and all 36 responses became short sentiment labels, with one exact label occupying `27.8%`. Consequently Phase 4 defaults to zero steps, Phase 5 starts directly from Phase 3, and curated held-out-safe Phase 5 data is the next quality experiment.
+
+### Legacy audited Phase 5 pilot
+
+[`finance_qa_curated_v1.json`](training/train_data/finance_qa_curated_v1.json) contains 29 project-authored examples across eight categories, including nine calculation scenarios. They teach the target concepts with different wording and numbers from the held-out suite. Before tokenization, Phase 5 compares every training instruction and answer with every held-out question and reference answer. Similarity at or above `0.80`, exact-response concentration above `10%`, malformed records, or duplicate IDs stop the run. The audit, source hash, category counts, and response profile are written to `phase5_data_audit.json`.
+
+Run the 500-step pilot directly from Phase 3. `--comparison_ckpts` is optional; include the historical FIQA Phase 5 checkpoint when available:
+
+```bash
+python3.9 training/run_phase5_pilot.py \
+  --phase3_ckpt checkpoints/finance_a100_v3_full/phase3_final.pt \
+  --base_ckpt checkpoints/a100_v2_gpt2vocab/final.pt \
+  --comparison_ckpts checkpoints/finance_a100_v3_full/phase5_final.pt \
+  --output_root checkpoints/finance_a100_v3_phase5_curated_aligned_v2 \
+  --local_root /content/checkpoints/finance_a100_v3_phase5_curated_aligned_v2
+```
+
+The first 500-step run improved score from `0.270` to `0.310` and concept recall from `3.5%` to `8.8%`, but still had `0%` pass rate, `5.6%` numeric accuracy, and a `22.2%` largest exact-response share. Inspection showed memorized training answers attached to unrelated questions. The original `SFTDataset` concatenated every pair and sampled arbitrary token offsets, allowing response-only windows whose instruction was outside the context. It now stores one padded `seq_len + 1` row per example and samples complete rows; old flat caches are rejected and the cache filename includes sequence length.
+
+Rerun the same 500-step experiment with a new output root such as `finance_a100_v3_phase5_curated_aligned_v2`. Keep data, LR, steps, checkpoint, and evaluation settings unchanged so sequence layout is the only experimental variable. The runner evaluates Phase 3, optional historical checkpoints, and the aligned pilot with the same adoption gate. Do not promote `phase5_final.pt` or raise the default Phase 5 step count unless the pilot passes and its generated answers are manually reviewed.
+
+The aligned 500-step result confirmed the loader correction but still failed adoption. Largest exact-response share fell from `22.2%` to `5.6%` and numeric accuracy rose from `5.6%` to `16.7%`; however score was only `0.289`, concept recall `5.3%`, and pass rate `0%`. Outputs still spliced memorized answers. At effective batch 128, 500 optimizer steps present the 29 examples about 2,200 times each, so the next controlled variable is update dose:
+
+```bash
+python3.9 training/run_phase5_step_ablation.py \
+  --phase3_ckpt checkpoints/finance_a100_v3_full/phase3_final.pt \
+  --base_ckpt checkpoints/a100_v2_gpt2vocab/final.pt \
+  --comparison_ckpts \
+    checkpoints/finance_a100_v3_full/phase5_final.pt \
+    checkpoints/finance_a100_v3_full_phase5_curated_aligned_v2/curated/phase5_final.pt \
+  --output_root checkpoints/finance_a100_v3_phase5_step_ablation \
+  --local_root /content/checkpoints/finance_a100_v3_phase5_step_ablation \
+  --step_variants 10 50 200
+```
+
+Each variant starts independently from Phase 3. Data, LR scheduler arguments, sequence layout, effective batch, seeds, and evaluation remain fixed; only the number of optimizer updates changes. Select no checkpoint unless it passes the absolute gate and manual review.
+
+The ablation found no useful update dose. The 10-step variant had the best relative score (`0.320`) and concept recall (`10.4%`) but `0%` numeric accuracy. At 50 and 200 steps, concept recall fell to `4.2%` and `4.4%`; numeric accuracy rose only to `11.1%` and `16.7%`, with generated answers still splicing memorized calculation fragments. The sole passing 10-step response was also a rubric false positive: it did not mention earnings but matched generic event-risk aliases. Finance QA cases now require a case-specific topic anchor and the report includes topic relevance. Do not run a finer step search on the 29-example dataset. The next experiment is a larger curated corpus with a separate in-distribution validation split for step selection; keep the 12-case held-out suite for final adoption only.
+
+The v2 re-evaluation confirmed the correction. Pass rate was `0%` for all five checkpoints; the 10-step false positive disappeared. Topic relevance was only `2.8%` for Phase 3, `5.6%` for historical Phase 5, and `8.3%`/`11.1%`/`11.1%` for 10/50/200 steps. No checkpoint passed the adoption gate, so the 29-example dose experiment is closed without promotion.
+
+Re-score the existing Phase 3, historical Phase 5, and 10/50/200-step checkpoints with the v2 rubric without retraining. The versioned report stem preserves the historical v1 outputs:
+
+```bash
+python3.9 training/run_phase5_step_ablation.py \
+  --phase3_ckpt checkpoints/finance_a100_v3_full/phase3_final.pt \
+  --comparison_ckpts \
+    checkpoints/finance_a100_v3_full/phase5_final.pt \
+  --output_root checkpoints/finance_a100_v3_phase5_step_ablation \
+  --step_variants 10 50 200 --eval_only \
+  --eval_suite training/eval_data/finance_qa_v2.json \
+  --eval_report_stem finance_qa_phase5_step_ablation_v2
+```
+
+### Large curated Phase 5 corpus
+
+[`build_finance_qa_curated_v2.py`](training/build_finance_qa_curated_v2.py) deterministically builds the next Phase 5 corpus:
+
+- 640 training examples: 80 in each of eight finance categories
+- 160 validation examples: 20 in each category
+- 12 final held-out cases: the unchanged `finance_qa_v2` adoption suite
+- 16 distinct scenario families per split, with no family shared across train, validation, or final held-out
+- 100 calculation examples whose expected values are recomputed with `Decimal` before files are written
+
+```bash
+python3.9 training/build_finance_qa_curated_v2.py
+```
+
+The generator rejects duplicate IDs, instructions, responses, family leakage, calculation mismatches, and any change that makes the held-out family registry disagree with the 12-case suite. [`finance_qa_curated_v2_manifest.json`](training/train_data/finance_qa_curated_v2_manifest.json) records category counts, family membership, source hashes, and all passed checks. Phase 5 additionally audits both train and validation against the final held-out text at the existing `0.80` threshold before tokenization. Current maxima are `0.488`/`0.261` for train instruction/response and `0.413`/`0.304` for validation.
+
+[`eval_finance_validation.py`](training/eval_finance_validation.py) selects checkpoints without generating or reading the final 12 held-out answers. It measures response-token teacher-forced NLL, token accuracy, and whether each prompt assigns lower NLL to its correct response than to a different response from the same scenario family. The latter is reported for all 160 examples and separately for the 20 validation calculations.
+
+A candidate must improve response NLL by at least 5% over the Phase 3 baseline, reach at least 60% prompt-binding and calculation-binding accuracy without regressing below the baseline, and keep every category NLL within 10% of its Phase 3 value. Among passing candidates, the lowest-NLL checkpoint is selected. [`run_phase5_validation.py`](training/run_phase5_validation.py) preserves periodic checkpoints, performs this validation-only selection, and runs the final held-out suite exactly once only when a candidate passes:
+
+```bash
+python3.9 training/run_phase5_validation.py \
+  --phase3_ckpt checkpoints/finance_a100_v3_full/phase3_final.pt \
+  --base_ckpt checkpoints/a100_v2_gpt2vocab/final.pt \
+  --output_root checkpoints/finance_a100_v3_phase5_curated_v2_validation \
+  --local_root /content/checkpoints/finance_a100_v3_phase5_curated_v2_validation \
+  --steps 500 --save_every 50 \
+  --batch_size 32 --grad_accum_steps 4 --seq_len 256 \
+  --dtype bfloat16
+```
+
+The runner writes `finance_validation_selection.{json,md}`. If no checkpoint passes, it exits successfully with no final report. If one passes, it writes `finance_qa_final_selected.{json,md}` comparing only Phase 3 and the selected checkpoint. Use `--no_final_eval` when the validation report should be reviewed before authorizing the one-time final evaluation.
+
+If training completed but validation was interrupted, rerun with `--skip_train`. The Colab cell adds this flag automatically when `curated_v2/phase5_final.pt` already exists, so the 500 training steps are not repeated.
+
+This is a controlled `seq_len=256` experiment. The runner rejects other values so a notebook-wide `SEQ_LEN=1024` setting cannot silently change VRAM use, positional behavior, or checkpoint comparability.
+
+The A100 run selected the 50-step checkpoint on validation: NLL improved from `5.663` to `4.905` (13.4%), token accuracy rose from `19.4%` to `36.5%`, and later checkpoints showed rising NLL. The final held-out result nevertheless matched Phase 3 at score `0.270`, pass rate `0%`, concept recall `3.5%`, and numeric accuracy `5.6%`. Topic relevance increased from `2.8%` to `11.1%`, but outputs still spliced template and news fragments. No checkpoint passed adoption.
+
+This result invalidates teacher-forced NLL and same-family response preference as sufficient selection gates: Phase 3 already had `96.2%` prompt binding and `100%` calculation binding despite unusable free generation. Future validation must score generated responses using scenario-specific concepts and recomputed values. Because the final `finance_qa_v2` outputs were consumed in this experiment, the next corpus iteration requires a newly sealed final suite.
 
 ---
 
@@ -1047,7 +1184,7 @@ Looped Transformers provide depth, but trading also needs breadth: trend followi
 
 As hidden state `h_t` evolves across loops, the router can choose different expert subsets at different depths, making each loop computationally distinct even though weights are shared. MoE provides breadth; loops provide depth.
 
-**Why MoE matters for trading:** Markets operate in distinct regimes that rarely coexist. A trending equity market, a volatility-expansion regime, a macro-shock risk-off move, and a mean-reverting range each demand different analytical priors. With MoE, the model can route a trending-market query primarily through experts that learned trend-following patterns during Phase 4 SFT, while routing a risk-management question through experts specialized in drawdown analysis from Phase 5. This implicit regime routing happens without any hard-coded switching logic — it emerges from training signal alone.
+**Why MoE matters for trading:** Markets operate in distinct regimes that rarely coexist. A trending equity market, a volatility-expansion regime, a macro-shock risk-off move, and a mean-reverting range each demand different analytical priors. MoE can support such specialization when the training tasks are aligned, but routing does not prevent task-format interference: the rejected Phase 4 experiments still degraded broad Finance QA. Any claimed expert specialization must therefore be demonstrated by held-out evaluations rather than inferred from low training loss.
 
 ---
 

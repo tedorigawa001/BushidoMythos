@@ -636,7 +636,7 @@ A 5-phase staged training script for adapting any BushidoMythos checkpoint towar
 | Phase 2 | OpenWebMath + Orca Math + Dolly 15k | Quantitative reasoning, step decomposition, and prose explanation logic |
 | Phase 3 | `financial-news-articles` + `finance-alpaca` | Finance vocabulary and instruction-format exposure |
 | Phase 4 | FinGPT forecaster + sentiment | Trading methodology SFT |
-| Phase 5 | FinGPT FIQA QA | Final risk-management and uncertainty calibration |
+| Phase 5 | Audited local Finance QA pilot | Risk-management and calculation SFT; disabled by default pending adoption |
 
 Both phases share one scheduler, one optimizer, and one checkpoint stream. Resuming an interrupted run loads `scheduler.state_dict()` directly — no step replay needed. If a legacy checkpoint (without `scheduler_state`) is loaded, the scheduler is re-advanced by replaying N steps.
 

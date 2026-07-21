@@ -82,6 +82,19 @@ def test_compare_reports_rejects_runtime_mismatch():
         compare_reports(baseline, candidate)
 
 
+def test_empty_phase_report_is_labeled_as_no_training_work():
+    payload = _payload()
+    payload["phases"] = []
+    summary = summarize_report(payload, label="skipped")
+    assert summary["training_work_performed"] is False
+    assert summary["tokens_processed"] == 0
+    assert summary["effective_tokens_per_second"] == 0.0
+
+    baseline = summarize_report(_payload(), label="trained")
+    with pytest.raises(ValueError, match="contains no training phases"):
+        compare_reports(baseline, summary)
+
+
 @pytest.mark.parametrize(
     ("pending", "errors"),
     [(1, []), (0, ["copy failed"])],

@@ -1,0 +1,181 @@
+{
+  "version": "finance_qa_curated_v1",
+  "description": "Human-reviewable Phase 5 pilot data. Scenarios are distinct from finance_qa_v1 held-out cases.",
+  "license": "Project-authored synthetic instructional data",
+  "examples": [
+    {
+      "id": "risk_budget_futures",
+      "category": "risk_management",
+      "instruction": "A futures trader has a small account. Describe a disciplined way to set contract quantity before entry.",
+      "response": "Start with the maximum account loss acceptable for the trade. Identify the price level that invalidates the setup, convert the entry-to-invalidation distance into dollars per contract using the contract multiplier, and divide the loss budget by that amount. Round down, include expected slippage and commissions, and skip the trade if even one contract exceeds the budget."
+    },
+    {
+      "id": "stop_after_volatility_jump",
+      "category": "risk_management",
+      "instruction": "Volatility doubled after a trade was planned. What should be reconsidered before placing the order?",
+      "response": "Recalculate the invalidation distance and expected execution loss under the new volatility. A wider structurally valid stop requires a smaller position if account risk is to stay constant. Also reassess gap risk, spread, and liquidity. Do not keep the old quantity merely to preserve the expected profit; postpone the trade when the revised minimum size cannot fit the risk limit."
+    },
+    {
+      "id": "portfolio_heat",
+      "category": "portfolio",
+      "instruction": "Explain portfolio heat and why adding several individually small trades can still be dangerous.",
+      "response": "Portfolio heat is the combined loss budget across open positions if their invalidation levels are reached. Several positions sized at modest standalone risk can create a large aggregate loss, especially when they share an equity, rate, currency, or volatility factor. Sum planned losses, group correlated exposures, stress them together, and reduce or reject new positions when total risk exceeds the portfolio limit."
+    },
+    {
+      "id": "correlated_fx_positions",
+      "category": "portfolio",
+      "instruction": "Why should long EUR/USD and short USD/CHF not automatically be treated as two independent trades?",
+      "response": "Both positions can express a similar short-dollar factor, so their losses may occur together even though the currency pairs differ. Estimate the common factor exposure and correlation under both normal and stressed conditions. Position limits should apply to the combined dollar view, not only to each ticket, because correlations can strengthen during macro announcements or broad risk moves."
+    },
+    {
+      "id": "drawdown_response",
+      "category": "decision_safety",
+      "instruction": "A strategy has entered a drawdown larger than anything in its backtest. Give a prudent response.",
+      "response": "Reduce or pause risk rather than increasing size to recover quickly. Verify data, implementation, fills, costs, and whether market behavior has moved outside the tested regime. Compare the drawdown with precommitted limits and run updated stress scenarios. Resume only after identifying a defensible cause and setting a smaller risk budget; a backtest does not guarantee that the strategy will recover."
+    },
+    {
+      "id": "averaging_plan",
+      "category": "decision_safety",
+      "instruction": "When can scaling into a position be different from impulsively averaging a loss?",
+      "response": "A planned scale-in defines entry zones, invalidation, maximum total quantity, and total loss budget before the first order. Each addition must preserve the thesis and keep combined risk within that budget. Impulsive averaging adds because price moved against the trade, often without a revised thesis or cap. A cheaper quote alone does not improve expected value or remove downside risk."
+    },
+    {
+      "id": "backtest_overfit",
+      "category": "decision_safety",
+      "instruction": "List checks that help distinguish a robust trading backtest from an overfit one.",
+      "response": "Reserve untouched out-of-sample periods, use walk-forward tests, include realistic fees and slippage, and test nearby parameter values rather than one optimum. Check survivorship and look-ahead bias, compare results across regimes and instruments, and report drawdowns and turnover. A large gap between fitted and unseen performance is a warning; simulated returns are evidence to investigate, not a promise."
+    },
+    {
+      "id": "liquidity_exit",
+      "category": "market_structure",
+      "instruction": "How can an apparently profitable position become difficult to exit in a thin market?",
+      "response": "The displayed quote may cover only a small quantity. A larger sell order can consume several bid levels, widen the effective spread, and move the market before the full position is filled. During stress, quoted depth may disappear entirely. Estimate liquidation cost from depth and participation rate, use smaller slices where appropriate, and size the original position for stressed rather than normal liquidity."
+    },
+    {
+      "id": "limit_order_tradeoff",
+      "category": "market_structure",
+      "instruction": "Compare the execution risks of a market order and a limit order during a fast move.",
+      "response": "A market order prioritizes execution but not price, so slippage can be severe when spreads widen or depth vanishes. A limit order caps the acceptable price but may fill only partly or not at all, leaving exposure unchanged. Choose based on urgency and liquidity, monitor partial fills, and do not assume either order type guarantees both execution and price."
+    },
+    {
+      "id": "central_bank_event",
+      "category": "event_risk",
+      "instruction": "Describe risk controls for holding a currency position through an unexpected central-bank decision.",
+      "response": "Treat the event as a jump-risk scenario: historical volatility may understate the possible move, spreads can widen, and protective orders may execute far from their trigger. Know the release window, model adverse gaps, reduce quantity or hedge where appropriate, and keep excess margin. Avoid exposure when a plausible discontinuous move would exceed the account loss limit."
+    },
+    {
+      "id": "overnight_gap",
+      "category": "event_risk",
+      "instruction": "Why is overnight equity risk not fully controlled by a nearby protective order?",
+      "response": "News released while the market is closed can move the next available price beyond the order trigger. The position may therefore exit at the opening quote with a loss larger than the planned stop distance. Control this with smaller overnight size, event awareness, diversification of factors, and a gap stress test. The protective order limits intent, not the exact realized fill."
+    },
+    {
+      "id": "inflation_bond_channel",
+      "category": "macro",
+      "instruction": "Explain one channel through which an upside inflation surprise can affect government bonds.",
+      "response": "An upside inflation surprise can raise expectations for tighter monetary policy or higher required compensation for inflation. That can push nominal yields upward and existing fixed-rate bond prices downward, with longer-duration bonds usually more sensitive. The reaction is conditional on prior expectations, growth implications, and central-bank credibility, so it should be framed as a scenario rather than a certainty."
+    },
+    {
+      "id": "rate_cut_currency",
+      "category": "macro",
+      "instruction": "Why does an interest-rate cut not guarantee that a currency will fall?",
+      "response": "Prices respond to the difference between the decision and what markets already expected. A cut can coincide with a stronger currency if it is smaller than feared, accompanied by restrictive guidance, or offset by safe-haven flows and developments abroad. Analyze relative rate expectations, positioning, and risk sentiment. The policy action changes probabilities; it does not determine one certain price direction."
+    },
+    {
+      "id": "duration_risk",
+      "category": "risk_metrics",
+      "instruction": "What does duration tell a bond investor, and what important risks does it omit?",
+      "response": "Duration approximates the percentage price sensitivity to a small parallel change in yields. It is useful for comparing rate exposure but is only a local approximation and does not fully capture convexity, nonparallel curve shifts, credit-spread changes, liquidity, or embedded options. Supplement it with key-rate durations, convexity, spread stress, and scenario analysis."
+    },
+    {
+      "id": "expected_shortfall",
+      "category": "risk_metrics",
+      "instruction": "How does expected shortfall complement a percentile loss threshold?",
+      "response": "Expected shortfall estimates the average loss conditional on being in the tail beyond a chosen percentile, so it describes tail severity rather than only the threshold crossing point. It still depends on the model, sample, horizon, and liquidity assumptions. Use it with stress tests and scenario analysis because sparse data and regime changes can make estimated tail losses unreliable."
+    },
+    {
+      "id": "option_short_gamma",
+      "category": "risk_management",
+      "instruction": "What is the main risk of a short-gamma options position during a large move?",
+      "response": "Short gamma causes directional exposure to grow against the position as the underlying moves, and losses can accelerate nonlinearly. Volatility may also rise and liquidity may deteriorate at the same time. Limit size, stress discontinuous moves and volatility jumps, account for hedging costs, and define loss and margin limits. Frequent delta hedging reduces some exposure but cannot guarantee protection through gaps."
+    },
+    {
+      "id": "short_sale_risk",
+      "category": "risk_management",
+      "instruction": "Why can a short stock position have an asymmetric loss profile?",
+      "response": "The maximum unlevered gain is bounded if the stock reaches zero, while the price can rise far above the entry and create losses exceeding the initial proceeds. Borrow fees, recalls, crowded squeezes, and gaps add risk. Use conservative quantity, monitor borrow and catalysts, maintain margin capacity, and define an exit plan without assuming a stop will fill at its trigger."
+    },
+    {
+      "id": "risk_of_ruin",
+      "category": "risk_metrics",
+      "instruction": "Why does reducing risk per trade improve survival through a losing streak?",
+      "response": "Smaller fractional risk slows the compounding decline in equity and leaves more capital available after consecutive losses. That reduces the chance that ordinary variance reaches a ruin or margin threshold before an edge can reappear. The appropriate fraction depends on win rate, payoff distribution, dependence between trades, and estimation error; uncertain edges justify more conservative sizing."
+    },
+    {
+      "id": "position_calc_36k",
+      "category": "calculation",
+      "instruction": "A portfolio is worth $36,000 and the loss limit for one trade is 0.75%. Entry is $82 and invalidation is $79. Ignoring costs, calculate the dollar loss budget and maximum whole units.",
+      "response": "The loss budget is $36,000 times 0.75%, which equals $270. The distance from entry to invalidation is $82 minus $79, or $3 per unit. Dividing $270 by $3 gives 90 units. Because quantity must not exceed the budget, the maximum whole-unit position is 90 units before allowing for costs or slippage."
+    },
+    {
+      "id": "position_calc_125k",
+      "category": "calculation",
+      "instruction": "An account has $125,000. Risk is capped at 0.4%, entry is $41.50, and the protective level is $39.00. Find the budget, unit risk, and maximum whole-unit quantity before fees.",
+      "response": "$125,000 times 0.4% gives a $500 loss budget. Unit risk is $41.50 minus $39.00, which is $2.50. The quotient $500 divided by $2.50 is 200, so 200 whole units is the maximum under the stated assumptions. Real sizing should be lower when expected slippage and commissions are material."
+    },
+    {
+      "id": "position_calc_round_down",
+      "category": "calculation",
+      "instruction": "Capital is $18,500, permitted trade risk is 0.6%, and risk per unit is $4.20. What whole-unit quantity stays within the limit?",
+      "response": "The loss budget is $18,500 times 0.6%, or $111. Dividing $111 by $4.20 gives about 26.43. Quantity must be rounded down, not to the nearest unit, so the limit is 26 units. Their planned loss is $109.20, leaving a small buffer before fees and execution slippage."
+    },
+    {
+      "id": "reward_risk_72",
+      "category": "calculation",
+      "instruction": "A long setup enters at $72, is invalid below $69, and has an objective at $81. Calculate unit downside, unit upside, and the upside-to-downside ratio.",
+      "response": "Unit downside is $72 minus $69, which equals $3. Unit upside is $81 minus $72, which equals $9. The upside-to-downside ratio is $9 divided by $3, or 3 to 1. This ratio describes the planned prices only and does not include the probability of success or imperfect execution."
+    },
+    {
+      "id": "reward_risk_short",
+      "category": "calculation",
+      "instruction": "A short trade enters at $148, exits for invalidation at $154, and targets $133. Compute risk, reward, and reward-to-risk per share.",
+      "response": "For the short, risk is $154 minus $148, or $6 per share. Reward is $148 minus $133, or $15 per share. Reward-to-risk is $15 divided by $6, which equals 2.5 to 1. Borrow costs, gaps, and slippage can make the realized values less favorable."
+    },
+    {
+      "id": "portfolio_loss_sum",
+      "category": "calculation",
+      "instruction": "Three open trades have planned losses of $180, $240, and $130 at their invalidation levels. What is total portfolio heat on a $50,000 account?",
+      "response": "Add the planned losses: $180 plus $240 plus $130 equals $550. Relative to $50,000, portfolio heat is $550 divided by $50,000, or 1.1%. This arithmetic assumes the invalidation losses are realized as planned; correlated gaps or slippage can make the actual combined loss larger."
+    },
+    {
+      "id": "drawdown_recovery_calc",
+      "category": "calculation",
+      "instruction": "After a 20% portfolio loss, what percentage gain on the remaining capital is required to return to the starting value?",
+      "response": "A 20% loss leaves 80% of the starting capital. Returning from 80 to 100 requires a gain of 20 divided by 80, which is 25%. The recovery percentage is larger than the drawdown percentage because the gain is earned on a smaller capital base."
+    },
+    {
+      "id": "leverage_equity_move_calc",
+      "category": "calculation",
+      "instruction": "Ignoring financing and liquidation, approximate the equity impact of a 2% adverse asset move when gross exposure is four times account equity.",
+      "response": "With four times gross exposure, a 2% adverse move produces an approximate account loss of 4 times 2%, or 8% of equity. This linear estimate omits changing margin, gaps, slippage, and nonlinear instruments, all of which can worsen the outcome. Leverage scales losses as well as gains."
+    },
+    {
+      "id": "break_even_win_rate",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy wins $150 when correct and loses $100 when wrong. What win rate gives zero expected profit?",
+      "response": "Let p be the win rate. Break-even requires 150p minus 100 times (1 minus p) to equal zero. Solving 250p equals 100 gives p equals 0.4, or 40%. Trading costs raise the required win rate, and the estimate is useful only if the payoff distribution remains representative."
+    },
+    {
+      "id": "stress_test_design",
+      "category": "risk_metrics",
+      "instruction": "Give principles for designing a useful portfolio stress test.",
+      "response": "Choose severe but coherent shocks tied to the portfolio's actual factors, including rates, spreads, currencies, volatility, and liquidity. Allow correlations and market depth to worsen together rather than moving one input in isolation. Revalue nonlinear positions, include margin and funding effects, document assumptions, and connect losses to concrete actions such as reducing exposure or raising liquidity."
+    },
+    {
+      "id": "forecast_uncertainty",
+      "category": "decision_safety",
+      "instruction": "How should a market forecast communicate uncertainty without becoming useless?",
+      "response": "State the base case, the observations supporting it, and the conditions that would invalidate it. Provide plausible alternative scenarios and identify catalysts that would shift their probabilities. Separate known facts from assumptions, avoid guaranteed language, and connect uncertainty to position size and monitoring. A forecast can guide a conditional plan without pretending to know the future."
+    }
+  ]
+}

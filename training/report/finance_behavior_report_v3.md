@@ -4,6 +4,10 @@
 
 > mention != correct: キーワード一致は言及の有無のみを測る rough な指標 (n が小さい点にも注意)。
 
+> 判定: Phase 5 は Phase 1 より形式・反復・リスク語彙の proxy が改善した。ただし、以下の
+> 実出力には質問への直接回答、数値の整合性、金融概念の正確さに重大な不足がある。
+> この結果だけで金融QA品質または実運用適合を主張しない。
+
 
 ## Aggregate metrics
 
@@ -139,9 +143,13 @@ I'm not sure what the stock exchanges work with you on a daily basis - it's usua
 ## 追記: v2 との総合比較 — 2026-07-20
 
 対象 run: `finance_a100_v3_full`(フル最適化構成: bf16 / compile / grouped MoE / fused AdamW /
-非同期 Drive コピー、batch 32 × grad_accum 4 × **seq_len 1024**、52,000 steps、3.93B tokens)。
+非同期 Drive コピー、batch 32 × grad_accum 4 × **seq_len 1024**、52,000 steps、
+意図した学習量 **6.816B tokens**)。最終wall-clock JSONの3.932B tokensは、最後のresume区間
+(step 22,000-52,000)だけの値である。
 v2(`finance_a100_v2`、batch 16 × accum 8 × seq 256、1.70B tokens)との比較。
-wall-clock は v2 実働 ~48h → v3 推定 13〜14h(約 3.5 倍短縮、データ量は 4 倍)。
+v3のtrain.log上の全経過時間は **13時間47分10秒**(08:40:48-22:27:58)。途中resumeで
+約2,900 stepsを再実行している。v2実働約48時間に対して見かけ上約3.5倍短いが、
+sequence長、実行構成、処理token数が異なるため、単一最適化の厳密なA/B速度比較ではない。
 
 ### WikiText-103 PPL(validation、先頭100/50チャンク)
 
@@ -153,7 +161,8 @@ wall-clock は v2 実働 ~48h → v3 推定 13〜14h(約 3.5 倍短縮、デー�
 | phase4 | 71.17 | 71.88 | — |
 | phase5 / final | 85.19 | 94.53 | **77.20** |
 
-- v3 native(1024)は**ベスト 40.99・final 77.20 で v2 を明確に上回る**(長文脈化+データ4倍)。
+- 同じ1024窓でのv3内部比較では、Phase 2がベスト40.99、finalが77.20。
+- v2はnative 256、v3はnative 1024であり、表のnative列同士は条件が異なるため厳密な直接比較ではない。
 - v3 を 256 窓で評価すると悪化して見える(94.53)のは評価条件ミスマッチ。
   **seq 拡張後のモデルは native 長で評価すること**(今後の評価プロトコルの注意点)。
 - 忘却比はベスト比 ×1.88(v2 ×1.48)とやや拡大したが、終着点の絶対値は v3 が良い。
@@ -171,8 +180,29 @@ wall-clock は v2 実働 ~48h → v3 推定 13〜14h(約 3.5 倍短縮、デー�
 - リスク概念言及は v2 のどのシードよりも高く、event_risk / liquidity への言及が初めて出現。
 - Phase1(0.00)→ Phase5(1.38)の伸び幅は過去最大。
 - v3 挙動は現状 1 シードのため、構造化推論率はシード変動幅(±25pt 規模)を考慮して読むこと。
+- `uncertainty` 100%は多くの回答が定型句 `I'm not sure` で始まる影響が大きく、金融推論の正確さを示さない。
+- `stop_loss`、`position_sizing`、`leverage`はいずれも0%。対応する直接プロンプトでも有効な説明を生成できていない。
+- 生成文には質問との不一致、意味の通らない数値、架空URLがあるため、現段階のPhase 5を金融助言用途へ使用しない。
 
 ### 結論
 
-v3 run は **wall-clock 約 3.5 倍短縮・データ量 4 倍・品質同等以上(native 評価では明確に改善)**。
-現行ベストモデルは `finance_a100_v3_full/final.pt`。
+v3 run は、52,000 stepsを約13時間47分で完走し、Phase 1からPhase 5にかけて形式・反復・
+リスク語彙proxyを改善した。一般言語PPLはPhase 2が最良で、その後は77.20まで悪化しており、
+specializationに伴う忘却が残る。`finance_a100_v3_full/final.pt`は最新の金融特化checkpointだが、
+金融回答品質は未合格である。次の採否判定には、複数seedに加えて正解付き金融QA、拒否・安全性、
+数値整合性を人手またはrubricで評価する必要がある。
+
+### 正解付きFinance QA追試
+
+12問・3 seedのPhase 2-5比較を実施した結果、全checkpointのpass率は0%で、採用候補はありません。
+Phase 5はscore 0.272、必須概念recall 3.7%、計算精度5.6%でした。Phase 4は36/36応答が
+`neutral`となり、非退化率0%でした。その後の500-step対照実験でも、forecaster-onlyは
+Phase 3のscore 0.270から0.256へ悪化し、balanced 1:1は36/36応答が短いsentiment labelに
+なって最大同一応答率27.8%でcollapse gateを超えました。Phase 4は広範なFinance QAの本番
+経路から除外し、Phase 5はPhase 3から直接開始します。詳細は
+[`finance_qa_phase2_5_analysis.md`](finance_qa_phase2_5_analysis.md)を参照してください。
+
+curated Phase 5の初回500-step pilotはscore 0.310まで上がりましたが、旧flat SFT loaderにより
+最大同一応答率22.2%となりました。example-aligned loaderで再実行すると最大同一応答率5.6%、
+数値精度16.7%へ改善した一方、score 0.289、必須概念recall 5.3%、pass率0%で不採用です。
+次は同じPhase 3起点・data・LR設定で10/50/200 optimizer stepを比較します。

@@ -12,17 +12,18 @@ Phase 3 — Finance domain + instruction tuning:
     ashraq/financial-news-articles (~306K articles, plain text)
     gbharti/finance-alpaca (~21K instruction examples, formatted as plain text)
     Combined: 8 000 steps
-Phase 4 — Trading methodology SFT:
+Phase 4 — Optional trading methodology SFT (disabled by default):
     FinGPT/fingpt-forecaster-dow30-202305-202405 (~1.2K stock-movement prediction examples)
     FinGPT/fingpt-sentiment-train (~76K sentiment-analysis examples)
-    Combined: ~78K pairs, 3 000 steps
-Phase 5 — Trading discipline / risk-management QA  ← FINAL calibration phase:
-    FinGPT/fingpt-fiqa_qa (~17K financial QA examples, 3 000 steps)
-    Last-mile SFT anchors the model's response style on risk acknowledgement
-    and uncertainty disclosure before deployment.
+    Classification-style sentiment labels harmed broad finance QA in controlled pilots.
+    Keep this phase disabled unless a task-specific checkpoint is explicitly required.
+Phase 5 — Audited finance QA SFT (disabled until pilot adoption):
+    Project-curated risk-management and calculation examples are the default source.
+    FinGPT/fingpt-fiqa_qa remains available as an explicit comparison source.
+    Training data is checked against the held-out Finance QA suite before tokenization.
 
 Usage:
-    # Full run (all 5 phases):
+    # Safe default run (Phases 1-3; Phases 4-5 default to zero steps):
     python training/finance_pretrain.py --phase 0
 
     # Resume an interrupted run:
@@ -34,8 +35,8 @@ Usage:
     # Phase 4 only (trading methodology from phase3_final.pt):
     python training/finance_pretrain.py --phase 4 --resume checkpoints/finance_a100_v2/phase3_final.pt
 
-    # Phase 5 only (risk-management QA from phase4_final.pt):
-    python training/finance_pretrain.py --phase 5 --resume checkpoints/finance_a100_v2/phase4_final.pt
+    # Controlled Phase 5 pilot (starts directly from phase3_final.pt):
+    python training/finance_pretrain.py --phase 5 --phase5_steps 500 --phase5_data_mode curated --resume checkpoints/finance_a100_v2/phase3_final.pt
 
     # Quick smoke test:
     python training/finance_pretrain.py --phase 1 --phase1_steps 100 --log_every 10
@@ -46,6 +47,8 @@ from __future__ import annotations  # アノテーション遅延評価(int | No
 import argparse
 import atexit
 import datetime
+import difflib
+import hashlib
 import inspect
 import json
 import math
@@ -56,6 +59,8 @@ import shutil
 import sys
 import threading
 import time
+import unicodedata
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -435,6 +440,7 @@ def build_financial_news(vocab_size: int, seq_len: int, batch_size: int, device:
 # ──────────────────────────────────────────────────────────────
 
 _INSTRUCT_EOS = "<|endoftext|>"  # GPT-2 EOS — marks end of each example
+_SFT_CACHE_FORMAT = "example_aligned_v1"
 
 
 def _format_instruct(instruction: str, response: str, context: str = "") -> str:
@@ -464,6 +470,40 @@ def _tokenize_sft(
     return ids, mask
 
 
+def _fit_sft_example(
+    ids: list[int], mask: list[bool], target_len: int,
+) -> tuple[list[int], list[bool]] | None:
+    """Fit one prompt/response pair without crossing into another example."""
+    if len(ids) != len(mask) or len(ids) < 2 or not any(mask):
+        return None
+    response_start = mask.index(True)
+    prompt_ids = ids[:response_start]
+    response_ids = ids[response_start:]
+    if not prompt_ids or not response_ids:
+        return None
+    if len(ids) > target_len:
+        prompt_budget = min(len(prompt_ids), max(1, max(8, target_len // 3)))
+        response_budget = target_len - prompt_budget
+        if len(response_ids) < response_budget:
+            response_budget = len(response_ids)
+            prompt_budget = target_len - response_budget
+        if len(prompt_ids) > prompt_budget:
+            head = (prompt_budget + 1) // 2
+            tail = prompt_budget - head
+            prompt_ids = prompt_ids[:head] + (prompt_ids[-tail:] if tail else [])
+        if len(response_ids) > response_budget:
+            final_token = response_ids[-1]
+            response_ids = response_ids[:response_budget]
+            response_ids[-1] = final_token
+        ids = prompt_ids + response_ids
+        mask = [False] * len(prompt_ids) + [True] * len(response_ids)
+    padding = target_len - len(ids)
+    if padding > 0:
+        ids = ids + [0] * padding
+        mask = mask + [False] * padding
+    return ids, mask
+
+
 class SFTDataset:
     """
     Instruction-tuning dataset with response-only loss masking.
@@ -490,39 +530,71 @@ class SFTDataset:
         if cache_path.exists():
             print(f"  Loading cached SFT tokens from {cache_path}")
             saved = torch.load(cache_path, weights_only=True)
-            self._ids  = saved["ids"]
+            if (
+                saved.get("format") != _SFT_CACHE_FORMAT
+                or saved["ids"].ndim != 2
+                or saved["ids"].shape[1] != seq_len + 1
+            ):
+                raise ValueError(
+                    f"Incompatible SFT cache format at {cache_path}; remove it so "
+                    "example-aligned tokens can be rebuilt"
+                )
+            self._ids = saved["ids"]
             self._mask = saved["mask"]
         else:
             print(f"  Tokenising {len(pairs):,} instruction pairs (will cache to {cache_path}) …")
             tok = _get_gpt2_tokenizer()
-            all_ids:  list[int]  = []
-            all_mask: list[bool] = []
+            rows_ids: list[list[int]] = []
+            rows_mask: list[list[bool]] = []
+            skipped = 0
             for i, (inst, resp, ctx) in enumerate(pairs):
                 ids, mask = _tokenize_sft(tok, inst, resp, ctx, vocab_size)
-                all_ids.extend(ids)
-                all_mask.extend(mask)
+                fitted = _fit_sft_example(ids, mask, seq_len + 1)
+                if fitted is None:
+                    skipped += 1
+                    continue
+                fitted_ids, fitted_mask = fitted
+                rows_ids.append(fitted_ids)
+                rows_mask.append(fitted_mask)
                 if (i + 1) % 5_000 == 0:
-                    print(f"    … {i+1:,}/{len(pairs):,} pairs ({len(all_ids):,} tokens)")
-            self._ids  = torch.tensor(all_ids,  dtype=torch.long)
-            self._mask = torch.tensor(all_mask, dtype=torch.bool)
+                    print(f"    … {i+1:,}/{len(pairs):,} pairs")
+            if not rows_ids:
+                raise ValueError("SFT dataset contains no usable prompt/response examples")
+            self._ids = torch.tensor(rows_ids, dtype=torch.long)
+            self._mask = torch.tensor(rows_mask, dtype=torch.bool)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save({"ids": self._ids, "mask": self._mask}, cache_path)
-            print(f"  Cached {len(self._ids):,} tokens → {cache_path}")
+            torch.save({
+                "format": _SFT_CACHE_FORMAT,
+                "ids": self._ids,
+                "mask": self._mask,
+            }, cache_path)
+            print(
+                f"  Cached {len(self._ids):,} aligned examples "
+                f"(skipped={skipped:,}) → {cache_path}"
+            )
 
     def __len__(self) -> int:
-        return max(1, (len(self._ids) - self.seq_len - 1) // (self.batch_size * self.seq_len))
+        return max(1, math.ceil(len(self._ids) / self.batch_size))
 
     def __iter__(self):
-        n = len(self._ids) - self.seq_len - 1
-        if n <= 0:
-            raise ValueError(f"Token count ({len(self._ids):,}) too small for seq_len={self.seq_len}.")
-        starts = torch.randperm(n, generator=self._gen)[: len(self) * self.batch_size]
-        for i in range(0, len(starts) - self.batch_size + 1, self.batch_size):
-            bs = starts[i : i + self.batch_size]
-            x    = torch.stack([self._ids [s : s + self.seq_len    ] for s in bs]).to(self.device)
-            y    = torch.stack([self._ids [s + 1 : s + self.seq_len + 1] for s in bs]).to(self.device)
-            mask = torch.stack([self._mask[s + 1 : s + self.seq_len + 1] for s in bs]).to(self.device)
-            yield x, y, mask
+        n_examples = len(self._ids)
+        order = torch.randperm(n_examples, generator=self._gen)
+        for batch_index in range(len(self)):
+            start = batch_index * self.batch_size
+            indices = order[start : start + self.batch_size]
+            if len(indices) < self.batch_size:
+                extra = torch.randint(
+                    n_examples,
+                    (self.batch_size - len(indices),),
+                    generator=self._gen,
+                )
+                indices = torch.cat((indices, extra))
+            rows = self._ids[indices]
+            row_masks = self._mask[indices]
+            x = rows[:, :-1].to(self.device)
+            y = rows[:, 1:].to(self.device)
+            loss_mask = row_masks[:, 1:].to(self.device)
+            yield x, y, loss_mask
 
 
 def _extract_sft_pairs(
@@ -727,26 +799,333 @@ def build_finance_alpaca(
                                instruction_cols=["instruction"],
                                output_cols=["output"],
                                input_cols=["input"])
-    cache_path = Path(cache_dir) / f"finance_alpaca_sft_{vocab_size}_{_CACHE_VERSION}.pt"
+    cache_path = Path(cache_dir) / (
+        f"finance_alpaca_sft_{vocab_size}_seq{seq_len}_{_SFT_CACHE_FORMAT}_{_CACHE_VERSION}.pt"
+    )
     return SFTDataset(pairs, vocab_size, seq_len, batch_size, device, cache_path)
+
+
+def _normalize_overlap_text(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text).lower()
+    return " ".join(re.findall(r"[a-z0-9]+(?:\.[0-9]+)?", text))
+
+
+def _overlap_similarity(left: str, right: str) -> float:
+    """Conservative lexical similarity used only for held-out leakage detection."""
+    left_norm = _normalize_overlap_text(left)
+    right_norm = _normalize_overlap_text(right)
+    if not left_norm or not right_norm:
+        return 0.0
+    if left_norm == right_norm:
+        return 1.0
+    left_tokens = set(left_norm.split())
+    right_tokens = set(right_norm.split())
+    union = left_tokens | right_tokens
+    jaccard = len(left_tokens & right_tokens) / len(union) if union else 0.0
+    sequence = difflib.SequenceMatcher(None, left_norm, right_norm).ratio()
+    return max(jaccard, sequence)
+
+
+def load_curated_finance_qa(path: Path) -> tuple[list, dict]:
+    raw = Path(path).read_bytes()
+    payload = json.loads(raw.decode("utf-8"))
+    examples = payload.get("examples")
+    if not isinstance(examples, list) or not examples:
+        raise ValueError("curated Phase 5 data must contain a non-empty 'examples' list")
+    pairs = []
+    seen = set()
+    categories = Counter()
+    scenario_families = Counter()
+    for example in examples:
+        example_id = str(example.get("id") or "").strip()
+        instruction = str(example.get("instruction") or "").strip()
+        response = str(example.get("response") or "").strip()
+        context = str(example.get("context") or "").strip()
+        category = str(example.get("category") or "").strip()
+        scenario_family = str(example.get("scenario_family") or "").strip()
+        if not example_id or example_id in seen:
+            raise ValueError(f"curated Phase 5 id must be present and unique: {example_id!r}")
+        if not instruction or not response or not category:
+            raise ValueError(f"{example_id}: category, instruction, and response are required")
+        seen.add(example_id)
+        categories[category] += 1
+        if scenario_family:
+            scenario_families[scenario_family] += 1
+        pairs.append((instruction, response, context))
+    metadata = {
+        "version": payload.get("version"),
+        "split": payload.get("split"),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "examples": len(pairs),
+        "categories": dict(sorted(categories.items())),
+        "ids": sorted(seen),
+        "scenario_families": dict(sorted(scenario_families.items())),
+    }
+    return pairs, metadata
+
+
+def audit_phase5_pairs(
+    pairs: list,
+    eval_suite_path: Path,
+    max_similarity: float = 0.80,
+) -> dict:
+    raw = Path(eval_suite_path).read_bytes()
+    suite = json.loads(raw.decode("utf-8"))
+    cases = suite.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("held-out suite must contain a non-empty 'cases' list")
+    maxima = {"instruction": {"similarity": 0.0}, "response": {"similarity": 0.0}}
+    violations = []
+    for pair_index, (instruction, response, _) in enumerate(pairs):
+        for case in cases:
+            for field, candidate, held_out in (
+                ("instruction", instruction, case.get("question", "")),
+                ("response", response, case.get("reference_answer", "")),
+            ):
+                similarity = _overlap_similarity(candidate, held_out)
+                record = {
+                    "pair_index": pair_index,
+                    "case_id": case.get("id"),
+                    "similarity": similarity,
+                }
+                if similarity > maxima[field]["similarity"]:
+                    maxima[field] = record
+                if similarity >= max_similarity:
+                    violations.append({"field": field, **record})
+    report = {
+        "suite_version": suite.get("version"),
+        "suite_sha256": hashlib.sha256(raw).hexdigest(),
+        "threshold": max_similarity,
+        "pairs_checked": len(pairs),
+        "comparisons": len(pairs) * len(cases) * 2,
+        "max_similarity": maxima,
+        "violations": violations,
+        "passed": not violations,
+    }
+    if violations:
+        first = violations[0]
+        raise RuntimeError(
+            "Phase 5 held-out overlap audit failed: "
+            f"pair={first['pair_index']} field={first['field']} "
+            f"case={first['case_id']} similarity={first['similarity']:.3f} "
+            f">= {max_similarity:.3f}"
+        )
+    return report
+
+
+def audit_phase5_validation_split(
+    train_pairs: list,
+    train_metadata: dict,
+    validation_pairs: list,
+    validation_metadata: dict,
+) -> dict:
+    """Reject identity and scenario-family leakage into Phase 5 validation."""
+    train_ids = set(train_metadata.get("ids", []))
+    validation_ids = set(validation_metadata.get("ids", []))
+    train_family_counts = train_metadata.get("scenario_families", {})
+    validation_family_counts = validation_metadata.get("scenario_families", {})
+    train_families = set(train_family_counts)
+    validation_families = set(validation_family_counts)
+    if (
+        not train_families
+        or not validation_families
+        or sum(train_family_counts.values()) != len(train_pairs)
+        or sum(validation_family_counts.values()) != len(validation_pairs)
+    ):
+        raise RuntimeError(
+            "Phase 5 train/validation split requires scenario_family on every corpus"
+        )
+    duplicate_ids = sorted(train_ids & validation_ids)
+    duplicate_families = sorted(train_families & validation_families)
+    exact_matches = []
+    for field_index, field in ((0, "instruction"), (1, "response")):
+        train_values = {
+            _normalize_overlap_text(pair[field_index]): index
+            for index, pair in enumerate(train_pairs)
+        }
+        for index, pair in enumerate(validation_pairs):
+            normalized = _normalize_overlap_text(pair[field_index])
+            if normalized in train_values:
+                exact_matches.append({
+                    "field": field,
+                    "train_pair_index": train_values[normalized],
+                    "validation_pair_index": index,
+                })
+    report = {
+        "train_examples": len(train_pairs),
+        "validation_examples": len(validation_pairs),
+        "train_families": sorted(train_families),
+        "validation_families": sorted(validation_families),
+        "duplicate_ids": duplicate_ids,
+        "duplicate_families": duplicate_families,
+        "exact_text_matches": exact_matches,
+        "passed": not (duplicate_ids or duplicate_families or exact_matches),
+    }
+    if not report["passed"]:
+        raise RuntimeError(
+            "Phase 5 train/validation split audit failed: "
+            f"duplicate_ids={duplicate_ids[:3]} "
+            f"duplicate_families={duplicate_families[:3]} "
+            f"exact_text_matches={exact_matches[:1]}"
+        )
+    return report
 
 
 def build_trading_qa(
-    vocab_size: int, seq_len: int, batch_size: int, device: torch.device, cache_dir: str
+    vocab_size: int,
+    seq_len: int,
+    batch_size: int,
+    device: torch.device,
+    cache_dir: str,
+    data_mode: str = "curated",
+    curated_path: str = "training/train_data/finance_qa_curated_v2_train.json",
+    validation_path: str | None = None,
+    eval_suite_path: str = "training/eval_data/finance_qa_v2.json",
+    max_similarity: float = 0.80,
+    max_response_share: float = 0.10,
+    audit_json: str | None = None,
 ) -> SFTDataset:
-    """Phase 5: FinGPT/fingpt-fiqa_qa — risk-management QA, final calibration phase."""
-    from datasets import load_dataset
-    print("Loading FinGPT/fingpt-fiqa_qa …")
-    ds = load_dataset("FinGPT/fingpt-fiqa_qa", split="train")
-    pairs = _extract_sft_pairs(ds, "fingpt-fiqa_qa",
-                               instruction_cols=["instruction"],
-                               output_cols=["output", "answer", "response"])
-    cache_path = Path(cache_dir) / f"trading_qa_sft_{vocab_size}_{_CACHE_VERSION}.pt"
+    """Build audited Phase 5 SFT data from curated, FIQA, or mixed sources."""
+    if data_mode not in {"curated", "fiqa", "mixed"}:
+        raise ValueError(f"unsupported Phase 5 data mode: {data_mode}")
+    pairs = []
+    sources = {}
+    curated_metadata = None
+    curated_pairs = []
+    if data_mode in {"curated", "mixed"}:
+        curated_pairs, curated_metadata = load_curated_finance_qa(Path(curated_path))
+        pairs.extend(curated_pairs)
+        sources["curated"] = len(curated_pairs)
+        print(
+            f"Loading curated Phase 5 data: {len(curated_pairs):,} examples "
+            f"({curated_metadata['version']})"
+        )
+    if data_mode in {"fiqa", "mixed"}:
+        from datasets import load_dataset
+        print("Loading FinGPT/fingpt-fiqa_qa …")
+        ds = load_dataset("FinGPT/fingpt-fiqa_qa", split="train")
+        fiqa_pairs = _extract_sft_pairs(
+            ds,
+            "fingpt-fiqa_qa",
+            instruction_cols=["instruction"],
+            output_cols=["output", "answer", "response"],
+        )
+        pairs.extend(fiqa_pairs)
+        sources["fiqa"] = len(fiqa_pairs)
+    if not pairs:
+        raise ValueError("Phase 5 produced no SFT pairs")
+
+    overlap = audit_phase5_pairs(pairs, Path(eval_suite_path), max_similarity)
+    validation_metadata = None
+    validation_overlap = None
+    split_separation = None
+    if validation_path and curated_metadata is not None:
+        validation_pairs, validation_metadata = load_curated_finance_qa(
+            Path(validation_path)
+        )
+        split_separation = audit_phase5_validation_split(
+            curated_pairs, curated_metadata, validation_pairs, validation_metadata
+        )
+        validation_overlap = audit_phase5_pairs(
+            validation_pairs, Path(eval_suite_path), max_similarity
+        )
+    profile = _sft_response_profile(pairs)
+    if profile["dominant_fraction"] > max_response_share:
+        raise RuntimeError(
+            "Phase 5 response-collapse risk: dominant response "
+            f"{profile['dominant_response']!r} occupies "
+            f"{profile['dominant_fraction']:.1%}, exceeding "
+            f"--phase5_max_response_share={max_response_share:.1%}"
+        )
+    audit = {
+        "data_mode": data_mode,
+        "sources": sources,
+        "curated": curated_metadata,
+        "validation": validation_metadata,
+        "sft_cache_format": _SFT_CACHE_FORMAT,
+        "sequence_layout": "one_example_per_row",
+        "response_profile": profile,
+        "held_out_overlap": overlap,
+        "validation_held_out_overlap": validation_overlap,
+        "train_validation_separation": split_separation,
+    }
+    if audit_json:
+        _write_json_atomic(Path(audit_json), audit)
+        print(f"  Phase 5 data audit: {audit_json}")
+    print(
+        "  Phase 5 audit passed: "
+        f"pairs={len(pairs):,} dominant_response={profile['dominant_fraction']:.1%} "
+        f"max_instruction_similarity={overlap['max_similarity']['instruction']['similarity']:.3f} "
+        f"max_response_similarity={overlap['max_similarity']['response']['similarity']:.3f}"
+    )
+    if split_separation is not None:
+        print(
+            "  Phase 5 validation isolated: "
+            f"examples={split_separation['validation_examples']:,} "
+            f"train_families={len(split_separation['train_families'])} "
+            f"validation_families={len(split_separation['validation_families'])}"
+        )
+    cache_tag = (
+        curated_metadata["sha256"][:12] if curated_metadata is not None else "remote"
+    )
+    cache_path = Path(cache_dir) / (
+        f"trading_qa_sft_{vocab_size}_seq{seq_len}_{data_mode}_{cache_tag}_v3_{_CACHE_VERSION}.pt"
+    )
     return SFTDataset(pairs, vocab_size, seq_len, batch_size, device, cache_path)
 
 
+def _balanced_response_sample(pairs: list, limit: int, seed: int = 42) -> list:
+    """Sample response classes round-robin so a short label cannot dominate."""
+    if limit <= 0:
+        return []
+    groups = {}
+    for pair in pairs:
+        response_key = re.sub(r"\s+", " ", pair[1].strip().lower())
+        groups.setdefault(response_key, []).append(pair)
+    rng = random.Random(seed)
+    for group in groups.values():
+        rng.shuffle(group)
+    selected = []
+    positions = {key: 0 for key in groups}
+    keys = sorted(groups)
+    while len(selected) < limit:
+        added = False
+        for key in keys:
+            position = positions[key]
+            if position < len(groups[key]):
+                selected.append(groups[key][position])
+                positions[key] += 1
+                added = True
+                if len(selected) == limit:
+                    break
+        if not added:
+            break
+    return selected
+
+
+def _sft_response_profile(pairs: list) -> dict:
+    counts = Counter(re.sub(r"\s+", " ", pair[1].strip().lower()) for pair in pairs)
+    dominant_response, dominant_count = counts.most_common(1)[0]
+    short_count = sum(len(pair[1].split()) <= 2 for pair in pairs)
+    return {
+        "examples": len(pairs),
+        "unique_responses": len(counts),
+        "dominant_response": dominant_response,
+        "dominant_count": dominant_count,
+        "dominant_fraction": dominant_count / len(pairs),
+        "short_response_fraction": short_count / len(pairs),
+    }
+
+
 def build_trading_methodology_sft(
-    vocab_size: int, seq_len: int, batch_size: int, device: torch.device, cache_dir: str
+    vocab_size: int,
+    seq_len: int,
+    batch_size: int,
+    device: torch.device,
+    cache_dir: str,
+    sentiment_ratio: float = 0.0,
+    balance_sentiment: bool = True,
+    max_response_share: float = 0.20,
 ) -> SFTDataset:
     """Phase 4: fingpt-forecaster-dow30 + fingpt-sentiment-train combined (~78K pairs).
 
@@ -770,16 +1149,55 @@ def build_trading_methodology_sft(
     print(f"  fingpt-forecaster-dow30: {len(fore):,} examples")
     pairs.extend(fore)
 
-    ds_sent = load_dataset("FinGPT/fingpt-sentiment-train", split="train")
-    sent = _extract_sft_pairs(ds_sent, "fingpt-sentiment-train",
-                              instruction_cols=["instruction"],
-                              output_cols=["output", "answer", "label"],
-                              input_cols=["input"])
-    print(f"  fingpt-sentiment-train: {len(sent):,} examples")
-    pairs.extend(sent)
+    sent = []
+    if sentiment_ratio != 0:
+        ds_sent = load_dataset("FinGPT/fingpt-sentiment-train", split="train")
+        sent_all = _extract_sft_pairs(ds_sent, "fingpt-sentiment-train",
+                                      instruction_cols=["instruction"],
+                                      output_cols=["output", "answer", "label"],
+                                      input_cols=["input"])
+        limit = (
+            len(sent_all)
+            if sentiment_ratio < 0
+            else min(len(sent_all), int(len(fore) * sentiment_ratio))
+        )
+        if balance_sentiment:
+            sent = _balanced_response_sample(sent_all, limit, seed=42)
+        else:
+            sent = sent_all[:limit]
+        print(
+            f"  fingpt-sentiment-train: selected {len(sent):,}/{len(sent_all):,} "
+            f"(ratio={sentiment_ratio:g}, balanced={str(balance_sentiment).lower()})"
+        )
+        pairs.extend(sent)
+    else:
+        print("  fingpt-sentiment-train: excluded (sentiment_ratio=0)")
+
+    random.Random(42).shuffle(pairs)
+    profile = _sft_response_profile(pairs)
+    print(
+        "  Phase 4 response profile: "
+        f"unique={profile['unique_responses']:,} "
+        f"dominant={profile['dominant_response']!r} "
+        f"share={profile['dominant_fraction']:.1%} "
+        f"short={profile['short_response_fraction']:.1%}"
+    )
+    if profile["dominant_fraction"] > max_response_share:
+        raise RuntimeError(
+            "Phase 4 response-label collapse risk: dominant response "
+            f"{profile['dominant_response']!r} occupies "
+            f"{profile['dominant_fraction']:.1%} of examples, exceeding "
+            f"--phase4_max_response_share={max_response_share:.1%}. "
+            "Reduce/balance sentiment data or explicitly raise the guard only "
+            "for a controlled reproduction."
+        )
 
     print(f"  Total Phase 4: {len(pairs):,} examples")
-    cache_path = Path(cache_dir) / f"trading_methodology_sft_{vocab_size}_{_CACHE_VERSION}.pt"
+    ratio_tag = str(sentiment_ratio).replace("-", "all").replace(".", "p")
+    balance_tag = "balanced" if balance_sentiment else "ordered"
+    cache_path = Path(cache_dir) / (
+        f"trading_methodology_sft_{vocab_size}_seq{seq_len}_sent{ratio_tag}_{balance_tag}_v3_{_CACHE_VERSION}.pt"
+    )
     return SFTDataset(pairs, vocab_size, seq_len, batch_size, device, cache_path)
 
 
@@ -1572,6 +1990,21 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     temporary.replace(path)
 
 
+def _default_wall_clock_path(
+    ckpt_dir: Path, phase: int, wall_metrics: dict
+) -> Path:
+    phases = wall_metrics.get("phases", [])
+    if phases:
+        start_step = min(int(item["start_step"]) for item in phases)
+        end_step = max(int(item["end_step"]) for item in phases)
+        span = f"steps{start_step:06d}-{end_step:06d}"
+    else:
+        span = "no_training"
+    started_at = str(wall_metrics["started_at"])
+    started_tag = started_at.split(".", 1)[0].replace("-", "").replace(":", "")
+    return Path(ckpt_dir) / f"wall_clock_phase{phase}_{span}_{started_tag}.json"
+
+
 # ──────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────
@@ -1871,6 +2304,9 @@ def train(args: argparse.Namespace) -> None:
         ds4 = _timed_dataset_build(
             "phase4-trading-methodology", build_trading_methodology_sft,
             cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+            sentiment_ratio=args.phase4_sentiment_ratio,
+            balance_sentiment=not args.phase4_unbalanced_sentiment,
+            max_response_share=args.phase4_max_response_share,
             wall_metrics=wall_metrics,
         )
         step, last_scaler = run_phase(
@@ -1893,6 +2329,16 @@ def train(args: argparse.Namespace) -> None:
         ds5 = _timed_dataset_build(
             "phase5-trading-qa", build_trading_qa,
             cfg.vocab_size, args.seq_len, args.batch_size, device, args.cache_dir,
+            data_mode=args.phase5_data_mode,
+            curated_path=args.phase5_curated_path,
+            validation_path=args.phase5_validation_path,
+            eval_suite_path=args.phase5_eval_suite,
+            max_similarity=args.phase5_max_similarity,
+            max_response_share=args.phase5_max_response_share,
+            audit_json=(
+                args.phase5_audit_json
+                or str(ckpt_dir / "phase5_data_audit.json")
+            ),
             wall_metrics=wall_metrics,
         )
         step, last_scaler = run_phase(
@@ -1959,7 +2405,7 @@ def train(args: argparse.Namespace) -> None:
     summary_path = (
         Path(args.wall_clock_json)
         if args.wall_clock_json
-        else ckpt_dir / f"wall_clock_phase{args.phase}.json"
+        else _default_wall_clock_path(ckpt_dir, args.phase, wall_metrics)
     )
     _write_json_atomic(summary_path, wall_metrics)
     print(
@@ -1999,10 +2445,37 @@ def parse_args() -> argparse.Namespace:
                    help="Dolly rows cap when --include_dolly is set (default 15000)")
     p.add_argument("--phase3_steps",  type=int,   default=8_000,
                    help="Steps for phase 3 (finance domain: financial-news + finance-alpaca plain text)")
-    p.add_argument("--phase4_steps",  type=int,   default=3_000,
-                   help="Steps for phase 4 (trading methodology: forecaster-dow30 ~1.2K + sentiment ~76K SFT)")
-    p.add_argument("--phase5_steps",  type=int,   default=3_000,
-                   help="Steps for phase 5 (trading discipline / risk-management QA — final calibration)")
+    p.add_argument("--phase4_steps",  type=int,   default=0,
+                   help="Optional task-specific Phase 4 steps. Default 0 because both "
+                        "forecaster and sentiment pilots degraded broad Finance QA")
+    p.add_argument("--phase4_sentiment_ratio", type=float, default=0.0,
+                   help="Maximum Phase 4 sentiment rows relative to forecaster rows. "
+                        "0=forecaster-only (default), 1=equal counts, -1=all sentiment rows")
+    p.add_argument("--phase4_unbalanced_sentiment", action="store_true",
+                   help="Disable response-label balancing when sampling Phase 4 sentiment rows")
+    p.add_argument("--phase4_max_response_share", type=float, default=0.20,
+                   help="Fail before Phase 4 training if one exact response exceeds this "
+                        "fraction of examples (default 0.20)")
+    p.add_argument("--phase5_steps",  type=int,   default=0,
+                   help="Phase 5 steps. Default 0 until the curated pilot passes adoption gates")
+    p.add_argument("--phase5_data_mode", choices=["curated", "fiqa", "mixed"],
+                   default="curated",
+                   help="Phase 5 source. Curated is local/audited; FIQA and mixed are comparison modes")
+    p.add_argument("--phase5_curated_path", type=str,
+                   default="training/train_data/finance_qa_curated_v2_train.json",
+                   help="Project-authored curated Phase 5 JSON")
+    p.add_argument("--phase5_validation_path", type=str,
+                   default="training/eval_data/finance_qa_curated_v2_validation.json",
+                   help="Family-disjoint Phase 5 validation JSON used for leakage audit")
+    p.add_argument("--phase5_eval_suite", type=str,
+                   default="training/eval_data/finance_qa_v2.json",
+                   help="Held-out suite used only for lexical overlap rejection")
+    p.add_argument("--phase5_max_similarity", type=float, default=0.80,
+                   help="Reject Phase 5 train/eval instruction or response pairs at or above this similarity")
+    p.add_argument("--phase5_max_response_share", type=float, default=0.10,
+                   help="Reject Phase 5 data when one exact response exceeds this fraction")
+    p.add_argument("--phase5_audit_json", type=str, default=None,
+                   help="Phase 5 data audit output; default <ckpt_dir>/phase5_data_audit.json")
 
     # Data / model
     p.add_argument("--base_ckpt",     type=str,
@@ -2049,7 +2522,7 @@ def parse_args() -> argparse.Namespace:
                    help="Path for the training log file (default: <ckpt_dir>/train.log)")
     p.add_argument("--wall_clock_json", type=str, default=None,
                    help="Wall-clock metrics JSON path (default: "
-                        "<ckpt_dir>/wall_clock_phaseN.json)")
+                        "unique <ckpt_dir>/wall_clock_phaseN_stepsA-B_TIMESTAMP.json)")
 
     # Resume
     p.add_argument("--resume",        type=str,   default=None,
@@ -2150,6 +2623,14 @@ def parse_args() -> argparse.Namespace:
             p.error(f"--loop_tail_p must be in [0,1] (got {args.loop_tail_p})")
     if not (0.0 <= args.replay_ratio < 1.0):
         p.error(f"--replay_ratio must be in [0,1) (got {args.replay_ratio})")
+    if args.phase4_sentiment_ratio < 0 and args.phase4_sentiment_ratio != -1:
+        p.error("--phase4_sentiment_ratio must be -1 or >= 0")
+    if not (0.0 < args.phase4_max_response_share <= 1.0):
+        p.error("--phase4_max_response_share must be in (0,1]")
+    if not (0.0 < args.phase5_max_similarity <= 1.0):
+        p.error("--phase5_max_similarity must be in (0,1]")
+    if not (0.0 < args.phase5_max_response_share <= 1.0):
+        p.error("--phase5_max_response_share must be in (0,1]")
     return args
 
 

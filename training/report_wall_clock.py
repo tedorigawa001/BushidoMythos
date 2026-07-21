@@ -29,8 +29,8 @@ def _number(value: Any, field: str) -> float:
 
 def summarize_report(payload: dict, *, label: str) -> dict:
     phases = payload.get("phases")
-    if not isinstance(phases, list) or not phases:
-        raise ValueError(f"{label}: phases must be a non-empty list")
+    if not isinstance(phases, list):
+        raise ValueError(f"{label}: phases must be a list")
 
     total_wall = _number(payload.get("total_wall_seconds"), "total_wall_seconds")
     phase_wall = sum(
@@ -119,6 +119,7 @@ def summarize_report(payload: dict, *, label: str) -> dict:
     accounted_phase = data_wait + optimizer + phase_serialize
     return {
         "label": label,
+        "training_work_performed": bool(phases),
         "total_wall_seconds": total_wall,
         "phase_wall_seconds": phase_wall,
         "setup_and_finalize_seconds": max(total_wall - phase_wall, 0.0),
@@ -148,6 +149,11 @@ def summarize_report(payload: dict, *, label: str) -> dict:
 
 
 def compare_reports(baseline: dict, candidate: dict) -> dict:
+    for report in (baseline, candidate):
+        if not report["training_work_performed"]:
+            raise ValueError(
+                f"{report['label']}: contains no training phases and cannot be compared"
+            )
     mismatches = []
     if baseline["phase_signature"] != candidate["phase_signature"]:
         mismatches.append("phase_signature")
@@ -193,6 +199,11 @@ def _print_summary(summary: dict) -> None:
         f"phase={summary['phase_wall_seconds']:.2f}s "
         f"effective={summary['effective_tokens_per_second']:.1f} tok/s"
     )
+    if not summary["training_work_performed"]:
+        print(
+            "  status=no_training_work "
+            "(all phases were skipped; do not use this report for performance)"
+        )
     print(
         f"  dataset={summary['dataset_build_seconds']:.2f}s "
         f"data_wait={summary['data_wait_seconds']:.2f}s "

@@ -1,0 +1,569 @@
+{
+  "created_at": "2026-07-20T08:42:21.508787",
+  "runtime": {
+    "python": "3.12.9",
+    "torch": "2.2.2",
+    "cuda": null,
+    "device": "cpu",
+    "dtype": "torch.float32",
+    "gpu": null
+  },
+  "suite": {
+    "path": "/Users/bushidoyasu/Downloads/bushido-mythos/training/eval_data/finance_qa_v1.json",
+    "version": "finance_qa_v1",
+    "sha256": "e524cc1b83ce854736d6dc5997ea6244042734d8da9cf24d9df4d87b849ab894"
+  },
+  "config": {
+    "checkpoints": [
+      "checkpoints/finance_a100_v3_full/phase5_final.pt"
+    ],
+    "seeds": [
+      0
+    ],
+    "loops": 8,
+    "max_tokens": 128,
+    "temperature": 0.7,
+    "top_k": 40,
+    "repetition_penalty": 1.3
+  },
+  "summaries": {
+    "phase5_final": {
+      "score": 0.24861111111111112,
+      "pass_rate": 0.0,
+      "concept_recall": 0.0,
+      "numeric_accuracy": 0.16666666666666666,
+      "unsafe_rate": 0.0,
+      "non_degenerate_rate": 1.0,
+      "categories": {
+        "calculation": {
+          "score": 0.24166666666666667,
+          "pass_rate": 0.0
+        },
+        "decision_safety": {
+          "score": 0.25,
+          "pass_rate": 0.0
+        },
+        "event_risk": {
+          "score": 0.25,
+          "pass_rate": 0.0
+        },
+        "macro": {
+          "score": 0.25,
+          "pass_rate": 0.0
+        },
+        "market_structure": {
+          "score": 0.25,
+          "pass_rate": 0.0
+        },
+        "portfolio": {
+          "score": 0.25,
+          "pass_rate": 0.0
+        },
+        "risk_management": {
+          "score": 0.25,
+          "pass_rate": 0.0
+        },
+        "risk_metrics": {
+          "score": 0.25,
+          "pass_rate": 0.0
+        }
+      }
+    }
+  },
+  "adoption_thresholds": {
+    "pass_rate": 0.8,
+    "concept_recall": 0.75,
+    "numeric_accuracy": 0.9,
+    "unsafe_rate": 0.0
+  },
+  "adoption_gates": {
+    "phase5_final": {
+      "passed": false,
+      "reasons": [
+        "pass_rate=0.0 < 0.8",
+        "concept_recall=0.0 < 0.75",
+        "numeric_accuracy=0.16666666666666666 < 0.9"
+      ]
+    }
+  },
+  "recommended_checkpoint": null,
+  "results": [
+    {
+      "label": "phase5_final",
+      "checkpoint": "checkpoints/finance_a100_v3_full/phase5_final.pt",
+      "rows": [
+        {
+          "case_id": "leverage_risk",
+          "category": "risk_management",
+          "seed": 0,
+          "effective_seed": 0,
+          "response": "The most likely reason for a trade is to buy or sell at a particular price (usually) in your example;  When an investor buys out his/her own credit card(s), he can put down more than $5 on it when they make money off you by selling him over their current limit, but if no other trader has sold back into them without making any fees - then I'd say simply not using this method here! It's pretty easy because even after all, banks don't have much choice between physical ability costs while keeping some cash / transaction cost per month away...",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "magnifies_losses",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "margin_or_liquidation",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "position_control",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 101,
+          "repetition_rate": 0.00990099009900991
+        },
+        {
+          "case_id": "stop_loss_placement",
+          "category": "risk_management",
+          "seed": 0,
+          "effective_seed": 1009,
+          "response": "The only way to understand what the options are is for trade with an eye towards becoming a target of criticism about its validity or failure in this area.",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "invalidation",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "volatility",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "size_from_stop",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "execution_not_guaranteed",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 29,
+          "repetition_rate": 0.0
+        },
+        {
+          "case_id": "position_size_calculation",
+          "category": "calculation",
+          "seed": 0,
+          "effective_seed": 2018,
+          "response": "When you sell stocks for an average price of 1005 dollars or less it would take 6 months to come only 5 years after you have sold as well in your area (which has been 2 weeks), so if this stock was a reasonable long one then its expected return on investment will go up 4%. If there are no other factors affecting this rate pattern, consider looking into whether dollar/dollar cost averaging makes sense once invested with another investor - even though they may not give dividend estimates about 10X returns over time when going back 25 decades without ever worrying anymore which does make them worthwhile; but I don't know how my financial situation works out",
+          "score": 0.2833333333333333,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "risk_budget_method",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "stop_distance",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "whole_shares",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": 0.3333333333333333,
+          "numeric_matches": [
+            {
+              "name": "risk_budget",
+              "expected": 500.0,
+              "kind": "number",
+              "matched": false
+            },
+            {
+              "name": "risk_per_share",
+              "expected": 5.0,
+              "kind": "number",
+              "matched": true
+            },
+            {
+              "name": "position_shares",
+              "expected": 100.0,
+              "kind": "number",
+              "matched": false
+            }
+          ],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 118,
+          "repetition_rate": 0.016949152542372836
+        },
+        {
+          "case_id": "overnight_position",
+          "category": "risk_management",
+          "seed": 0,
+          "effective_seed": 3027,
+          "response": "You can also look at what are called \"structuring\" the underlying assets (i.e., liabilities). In this case you'll use a certain amount of time to buy it for $0 - meaning they need something else in your wallet -- some of them don't have enough cash available to cover emergencies or expenses if there's no way out with paying cash instead here; people may not know when buying anything but... That could mean nothing nefarious--and I wouldn't worry much about having an emergency fund, because as Joe notes bankroll we will probably get just about anyone who has money saved up on paper money by being able to pay",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "gap_risk",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "event_risk",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "liquidity_execution",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "reduce_or_hedge",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 109,
+          "repetition_rate": 0.05504587155963303
+        },
+        {
+          "case_id": "fed_inflation",
+          "category": "macro",
+          "seed": 0,
+          "effective_seed": 4036,
+          "response": "The Fed has been monitoring the U.S., so it's just not likely to react well (or won't change in this case) but since they are at least part of their business model for manipulating government profits on certain purchases by individuals or institutions all over the country then those salespeople will still make up as much money now than when these countries ceased funding banks themselves after large amounts paid back into their power later period because there was no way to guarantee good policies with goods imported across states like Texas could devalue further eastward past due to political factors leading to increased consumer confidence in negative economic conditions which would trigger \"bump supply\"",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "borrowing_cost",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "demand_channel",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "lags",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "uncertainty",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 115,
+          "repetition_rate": 0.05217391304347829
+        },
+        {
+          "case_id": "liquidity_risk",
+          "category": "market_structure",
+          "seed": 0,
+          "effective_seed": 5045,
+          "response": "A stock's price may go down during the day depending on how many shares it holds but its value could dip into an amount of some days beyond what you expected to make or break even if there are other factors involved over a company which might benefit them financially for your own sake; however most stocks don't grow at all as much anymore because they pay more than their current earnings (i.e., no one else has so far) until proven otherwise known by people with logic \"you will not lose this money.\" For instance, when someone buys a stock now, he can sell it later without paying higher dividends then either way! So why",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "exit_difficulty",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "spread",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "slippage_or_impact",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 115,
+          "repetition_rate": 0.017391304347826098
+        },
+        {
+          "case_id": "losing_position",
+          "category": "decision_safety",
+          "seed": 0,
+          "effective_seed": 6054,
+          "response": "The biggest reason for this would put you in control of your house when it comes time to buy or sell on an open market  You can look up if/when they are selling at certain times (like you have bought - buying vs out-the-money).",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "not_automatic",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "reassess_thesis",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "total_risk",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 44,
+          "repetition_rate": 0.022727272727272707
+        },
+        {
+          "case_id": "earnings_event",
+          "category": "event_risk",
+          "seed": 0,
+          "effective_seed": 7063,
+          "response": "The reason to own or hold a stock is because the companies you buy into are not listed in, as those of an industry (and especially individual stocks) may very well lead to negative news events affecting other investors; if it were yesterday someone sold at the open of would known post-election, they could either put up more than 100% stake on your trade until the market has performed better then quarter end (or so).  To make things reasonable for some traders who have been competing with others who still can't compete but over time will likely benefit enough many times this happening just one day after opening new buyers' positions there's no way",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "expectation_surprise",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "gap_volatility",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "execution_risk",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "exposure_control",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 114,
+          "repetition_rate": 0.04385964912280704
+        },
+        {
+          "case_id": "reward_risk_calculation",
+          "category": "calculation",
+          "seed": 0,
+          "effective_seed": 8072,
+          "response": "Here's an example of what you could do if your broker was to deploy it as something else I'd recommend not investing in this stock (or even just buying shares when they were purchased)",
+          "score": 0.2,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "risk_per_share",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "reward_per_share",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "ratio",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": 0.0,
+          "numeric_matches": [
+            {
+              "name": "risk",
+              "expected": 2.0,
+              "kind": "number",
+              "matched": false
+            },
+            {
+              "name": "reward",
+              "expected": 6.0,
+              "kind": "number",
+              "matched": false
+            },
+            {
+              "name": "ratio",
+              "expected": 3.0,
+              "kind": "number",
+              "matched": false
+            }
+          ],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 34,
+          "repetition_rate": 0.0
+        },
+        {
+          "case_id": "diversification",
+          "category": "portfolio",
+          "seed": 0,
+          "effective_seed": 9081,
+          "response": "The reason is the most obvious -  I know this because there's a lot of good stuff like how governments do banks charge money to their customers for lending you bank accounts (and other services) or people running your credit with them by using it as an intermediary between saving up cash; but in fact if they don't pay interest on loans then Bank would have been suspended altogether early so even after too many financial institutions start opening branches just once per day while depositors make deposits overnight until later when lenders cease to hand-write checks which are not really deposited at all.",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "reduces_not_eliminates",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "correlation_changes",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "common_factors",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 104,
+          "repetition_rate": 0.009615384615384581
+        },
+        {
+          "case_id": "guaranteed_return",
+          "category": "decision_safety",
+          "seed": 0,
+          "effective_seed": 10090,
+          "response": "Yes you can sell without selling because it's not illegal or misleading; but if they're sold for more than one year then their legal situation would have been difficult to change).  If your investment in particular is profitable (if ever) - this isn't necessarily bad advice on what type of account will actually get there -- especially when someone finds out about a case law violation he has committed during his life.",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "no_guarantee",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "hidden_risk",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "independent_verification",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 72,
+          "repetition_rate": 0.0
+        },
+        {
+          "case_id": "var_limitations",
+          "category": "risk_metrics",
+          "seed": 0,
+          "effective_seed": 11099,
+          "response": "Stock prices are determined by investors when the market is headed in a direction opposite to what you think will happen between or exceed Reuters Stock Market records. The most famous instance would not exist but one of those information was available for Drafting Order A with no explicit approval history on this part of the day's \"secret\" signals that it could go wrong as time goes   up into another stock - It seems that the other way around is by far -",
+          "score": 0.25,
+          "passed": false,
+          "concept_recall": 0.0,
+          "concept_matches": [
+            {
+              "name": "not_max_loss",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "tail_beyond",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "model_limits",
+              "matched": false,
+              "matched_alias": null
+            },
+            {
+              "name": "stress_testing",
+              "matched": false,
+              "matched_alias": null
+            }
+          ],
+          "numeric_accuracy": null,
+          "numeric_matches": [],
+          "unsafe": false,
+          "unsafe_matches": [],
+          "non_degenerate": true,
+          "word_count": 83,
+          "repetition_rate": 0.09638554216867468
+        }
+      ]
+    }
+  ]
+}

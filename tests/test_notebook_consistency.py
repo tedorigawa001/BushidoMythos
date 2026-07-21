@@ -131,8 +131,22 @@ class TestRequiredFlags:
     def test_subprocess_failure_propagates_in_all_training_cells(self):
         """A failed training process must fail its Colab cell."""
         for i, src in enumerate(self.cells):
-            assert "proc.check_returncode()" in src, (
+            assert "raise subprocess.CalledProcessError(proc.returncode, cmd)" in src, (
                 f"Training cell {i} does not propagate subprocess failure"
+            )
+
+    def test_act_curriculum_flag_names_are_exact_in_all_training_cells(self):
+        expected = (
+            "--act_anchor_step",
+            "--act_threshold_start",
+            "--act_warmup_frac",
+            "--ponder_weight_start",
+            "--ponder_weight_end",
+        )
+        for i, src in enumerate(self.cells):
+            missing = [flag for flag in expected if f'"{flag}"' not in src]
+            assert not missing, (
+                f"Training cell {i} has missing or corrupted ACT flags: {missing}"
             )
 
 
@@ -181,6 +195,127 @@ class TestNotebookStructure:
         )
         assert "LOCAL_CACHE" in all_src, "Cache setup cell not found"
         assert "DRIVE_CACHE" in all_src, "Drive cache variable not found"
+
+    def test_full_training_uses_a_fresh_dynamic_run_directory(self):
+        sources = {
+            cell.get("id"): "".join(cell["source"])
+            for cell in self.nb["cells"]
+        }
+        gpu_settings = sources["check-gpu"]
+        assert 'FRESH_RUN_NAME = "finance_a100_v3_full"' in gpu_settings
+        assert "CKPT_SUBDIR = FRESH_RUN_NAME" in gpu_settings
+        assert all(
+            "finance_a100_v2" not in source for source in sources.values()
+        ), "Notebook source must not resume or evaluate the completed v2 run"
+        for src in _training_cells(self.nb):
+            assert 'f"{REPO}/checkpoints/{CKPT_SUBDIR}"' in src
+
+    def test_finance_qa_compares_phase2_through_phase5(self):
+        sources = {
+            cell.get("id"): "".join(cell["source"])
+            for cell in self.nb["cells"]
+        }
+        source = sources["run-finance-qa-eval"]
+        assert "training/eval_finance_qa.py" in source
+        assert "for phase in (2, 3)" in source
+        assert "for phase in (4, 5)" in source
+        assert "if path.is_file()" in source
+        assert '"--seeds", "0", "1", "2"' in source
+        assert "subprocess.run(cmd, check=True)" in source
+        assert "finance_qa_phase2_5.json" in source
+        assert "finance_qa_phase2_5.md" in source
+
+    def test_phase4_training_has_response_collapse_controls(self):
+        sources = {
+            cell.get("id"): "".join(cell["source"])
+            for cell in self.nb["cells"]
+        }
+        settings = sources["check-gpu"]
+        phase4 = sources["run-phase4"]
+        assert "PHASE4_STEPS = 0" in settings
+        assert "PHASE4_SENTIMENT_RATIO = 0.0" in settings
+        assert "PHASE4_MAX_RESPONSE_SHARE = 0.20" in settings
+        assert '"--phase4_sentiment_ratio"' in phase4
+        assert '"--phase4_max_response_share"' in phase4
+        assert "PHASE5_STEPS = 0" in settings
+        assert 'PHASE5_DATA_MODE = "curated"' in settings
+
+    def test_phase5_skips_disabled_phase4(self):
+        sources = {
+            cell.get("id"): "".join(cell["source"])
+            for cell in self.nb["cells"]
+        }
+        source = sources["run-phase5"]
+        assert "if PHASE4_STEPS > 0" in source
+        assert 'else f"{CKPT_DIR}/phase3_final.pt"' in source
+        assert '"--phase4_steps", str(PHASE4_STEPS)' in source
+
+    def test_phase4_ablation_uses_isolated_runner(self):
+        sources = {
+            cell.get("id"): "".join(cell["source"])
+            for cell in self.nb["cells"]
+        }
+        source = sources["run-phase4-ablation"]
+        assert "training/run_phase4_ablation.py" in source
+        assert '"--steps", "500"' in source
+        assert "phase3_final.pt" in source
+        assert "subprocess.run(cmd, check=True)" in source
+        assert "finance_qa_phase4_ablation.json" in source
+
+    def test_phase5_pilot_uses_audited_isolated_runner(self):
+        sources = {
+            cell.get("id"): "".join(cell["source"])
+            for cell in self.nb["cells"]
+        }
+        source = sources["run-phase5-pilot"]
+        assert "training/run_phase5_pilot.py" in source
+        assert '"--steps", "500"' in source
+        assert "phase3_final.pt" in source
+        assert "phase5_data_audit.json" in source
+        assert "subprocess.run(cmd, check=True)" in source
+        assert "finance_qa_phase5_pilot.json" in source
+
+    def test_phase5_step_ablation_rescores_existing_doses_with_v2(self):
+        sources = {
+            cell.get("id"): "".join(cell["source"])
+            for cell in self.nb["cells"]
+        }
+        source = sources["run-phase5-step-ablation"]
+        assert "training/run_phase5_step_ablation.py" in source
+        assert '"--step_variants", "10", "50", "200"' in source
+        assert "phase3_final.pt" in source
+        assert "historical_phase5" in source
+        assert '"--eval_only"' in source
+        assert "training/eval_data/finance_qa_v2.json" in source
+        assert "subprocess.run(cmd, check=True)" in source
+        assert "finance_qa_phase5_step_ablation_v2.json" in source
+
+    def test_large_curated_v2_cell_builds_and_checks_manifest(self):
+        sources = {
+            cell.get("id"): "".join(cell["source"])
+            for cell in self.nb["cells"]
+        }
+        source = sources["build-finance-curated-v2"]
+        assert "training/build_finance_qa_curated_v2.py" in source
+        assert '"train": 640' in source
+        assert '"validation": 160' in source
+        assert '"held_out": 12' in source
+        assert 'all(manifest["checks"].values())' in source
+
+    def test_phase5_validation_cell_keeps_final_held_out_behind_gate(self):
+        sources = {
+            cell.get("id"): "".join(cell["source"])
+            for cell in self.nb["cells"]
+        }
+        source = sources["run-phase5-validation-selection"]
+        assert "training/run_phase5_validation.py" in source
+        assert '"--save_every", "50"' in source
+        assert '"--seq_len", "256"' in source
+        assert '"--seq_len", str(SEQ_LEN)' not in source
+        assert "completed_phase5.is_file()" in source
+        assert 'cmd.append("--skip_train")' in source
+        assert "finance_validation_selection.json" in source
+        assert "finance_qa_final_selected.json" in source
 
     def test_dependency_install_fails_loudly_and_checks_bitsandbytes(self):
         install = next(

@@ -10,6 +10,7 @@ Covers:
 """
 
 import argparse
+import json
 import math
 import sys
 import tempfile
@@ -63,6 +64,263 @@ def test_liger_fused_ce_and_chunked_ce_are_mutually_exclusive(monkeypatch):
     )
     with pytest.raises(SystemExit, match="2"):
         finance_pretrain.parse_args()
+
+
+def test_default_wall_clock_path_is_unique_per_resumed_segment(tmp_path):
+    metrics = {
+        "started_at": "2026-07-19T14:05:10.256239",
+        "phases": [
+            {"start_step": 22000, "end_step": 30000},
+            {"start_step": 30000, "end_step": 52000},
+        ],
+    }
+
+    path = finance_pretrain._default_wall_clock_path(tmp_path, 0, metrics)
+
+    assert path == tmp_path / (
+        "wall_clock_phase0_steps022000-052000_20260719T140510.json"
+    )
+
+
+def test_default_wall_clock_path_labels_no_training(tmp_path):
+    metrics = {
+        "started_at": "2026-07-19T14:05:10.256239",
+        "phases": [],
+    }
+
+    path = finance_pretrain._default_wall_clock_path(tmp_path, 3, metrics)
+
+    assert path == tmp_path / (
+        "wall_clock_phase3_no_training_20260719T140510.json"
+    )
+
+
+def test_phase4_balanced_response_sample_round_robins_labels():
+    pairs = [
+        (f"neutral-{i}", "neutral", "") for i in range(8)
+    ] + [
+        (f"positive-{i}", "positive", "") for i in range(3)
+    ] + [
+        (f"negative-{i}", "negative", "") for i in range(2)
+    ]
+
+    selected = finance_pretrain._balanced_response_sample(pairs, 6, seed=0)
+    counts = {}
+    for _, response, _ in selected:
+        counts[response] = counts.get(response, 0) + 1
+
+    assert counts == {"negative": 2, "neutral": 2, "positive": 2}
+
+
+def test_phase4_response_profile_detects_label_collapse():
+    pairs = [(f"q-{i}", "neutral", "") for i in range(9)]
+    pairs.append(("forecast", "A detailed forecast with several scenarios.", ""))
+
+    profile = finance_pretrain._sft_response_profile(pairs)
+
+    assert profile["dominant_response"] == "neutral"
+    assert profile["dominant_fraction"] == 0.9
+    assert profile["short_response_fraction"] == 0.9
+
+
+def test_phase4_data_controls_have_safe_defaults(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["finance_pretrain.py"])
+
+    args = finance_pretrain.parse_args()
+
+    assert args.phase4_steps == 0
+    assert args.phase4_sentiment_ratio == 0.0
+    assert args.phase4_unbalanced_sentiment is False
+    assert args.phase4_max_response_share == 0.20
+    assert args.phase5_steps == 0
+    assert args.phase5_data_mode == "curated"
+    assert args.phase5_curated_path.endswith("finance_qa_curated_v2_train.json")
+    assert args.phase5_validation_path.endswith(
+        "finance_qa_curated_v2_validation.json"
+    )
+    assert args.phase5_max_similarity == 0.80
+    assert args.phase5_max_response_share == 0.10
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--phase4_sentiment_ratio", "-0.5"],
+        ["--phase4_max_response_share", "0"],
+        ["--phase4_max_response_share", "1.1"],
+    ],
+)
+def test_phase4_data_controls_reject_invalid_values(monkeypatch, argv):
+    monkeypatch.setattr(sys, "argv", ["finance_pretrain.py", *argv])
+
+    with pytest.raises(SystemExit, match="2"):
+        finance_pretrain.parse_args()
+
+
+def test_curated_phase5_data_passes_held_out_overlap_audit():
+    pairs, metadata = finance_pretrain.load_curated_finance_qa(
+        repo_root / "training/train_data/finance_qa_curated_v1.json"
+    )
+
+    audit = finance_pretrain.audit_phase5_pairs(
+        pairs,
+        repo_root / "training/eval_data/finance_qa_v2.json",
+    )
+
+    assert metadata["version"] == "finance_qa_curated_v1"
+    assert metadata["examples"] >= 20
+    assert metadata["categories"]["calculation"] >= 5
+    assert audit["passed"] is True
+    assert audit["violations"] == []
+    assert audit["pairs_checked"] == len(pairs)
+
+
+def test_phase5_overlap_audit_rejects_exact_held_out_question(tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(json.dumps({
+        "version": "test",
+        "cases": [{
+            "id": "held-out",
+            "question": "This exact question must remain held out.",
+            "reference_answer": "This exact answer must remain held out.",
+        }],
+    }))
+
+    with pytest.raises(RuntimeError, match="held-out overlap audit failed"):
+        finance_pretrain.audit_phase5_pairs(
+            [("This exact question must remain held out.", "Different answer.", "")],
+            suite_path,
+        )
+
+
+def test_phase5_v2_train_validation_split_passes_audit():
+    train_pairs, train_metadata = finance_pretrain.load_curated_finance_qa(
+        repo_root / "training/train_data/finance_qa_curated_v2_train.json"
+    )
+    validation_pairs, validation_metadata = finance_pretrain.load_curated_finance_qa(
+        repo_root / "training/eval_data/finance_qa_curated_v2_validation.json"
+    )
+
+    audit = finance_pretrain.audit_phase5_validation_split(
+        train_pairs, train_metadata, validation_pairs, validation_metadata
+    )
+
+    assert audit["passed"] is True
+    assert audit["train_examples"] == 640
+    assert audit["validation_examples"] == 160
+    assert audit["duplicate_ids"] == []
+    assert audit["duplicate_families"] == []
+    assert audit["exact_text_matches"] == []
+
+
+def test_phase5_split_audit_rejects_family_overlap():
+    metadata = {"ids": ["one"], "scenario_families": {"shared": 1}}
+
+    with pytest.raises(RuntimeError, match="split audit failed"):
+        finance_pretrain.audit_phase5_validation_split(
+            [("train question", "train response", "")], metadata,
+            [("validation question", "validation response", "")], metadata,
+        )
+
+
+def test_phase5_curated_builder_writes_audit(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_dataset(pairs, *args, **kwargs):
+        captured["pairs"] = pairs
+        return "dataset"
+
+    monkeypatch.setattr(finance_pretrain, "SFTDataset", fake_dataset)
+    audit_path = tmp_path / "audit.json"
+    result = finance_pretrain.build_trading_qa(
+        100,
+        16,
+        2,
+        torch.device("cpu"),
+        str(tmp_path),
+        curated_path=str(repo_root / "training/train_data/finance_qa_curated_v1.json"),
+        eval_suite_path=str(repo_root / "training/eval_data/finance_qa_v2.json"),
+        audit_json=str(audit_path),
+    )
+
+    audit = json.loads(audit_path.read_text())
+    assert result == "dataset"
+    assert len(captured["pairs"]) == audit["sources"]["curated"]
+    assert audit["sft_cache_format"] == finance_pretrain._SFT_CACHE_FORMAT
+    assert audit["sequence_layout"] == "one_example_per_row"
+    assert audit["held_out_overlap"]["passed"] is True
+    assert audit["response_profile"]["dominant_fraction"] <= 0.10
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--phase5_max_similarity", "0"],
+        ["--phase5_max_similarity", "1.1"],
+        ["--phase5_max_response_share", "0"],
+        ["--phase5_max_response_share", "1.1"],
+    ],
+)
+def test_phase5_data_controls_reject_invalid_values(monkeypatch, argv):
+    monkeypatch.setattr(sys, "argv", ["finance_pretrain.py", *argv])
+
+    with pytest.raises(SystemExit, match="2"):
+        finance_pretrain.parse_args()
+
+
+def test_phase4_builder_caps_and_balances_sentiment(monkeypatch, tmp_path):
+    fore = [(f"forecast-{i}", f"long forecast response {i}", "") for i in range(3)]
+    sent = (
+        [(f"neutral-{i}", "neutral", "") for i in range(8)]
+        + [("positive", "positive", "")]
+        + [("negative", "negative", "")]
+    )
+    monkeypatch.setattr(
+        "datasets.load_dataset", lambda *args, **kwargs: MagicMock()
+    )
+    monkeypatch.setattr(
+        finance_pretrain,
+        "_extract_sft_pairs",
+        lambda ds, name, **kwargs: fore if "forecaster" in name else sent,
+    )
+    captured = {}
+
+    def fake_dataset(pairs, *args, **kwargs):
+        captured["pairs"] = pairs
+        return "dataset"
+
+    monkeypatch.setattr(finance_pretrain, "SFTDataset", fake_dataset)
+
+    result = finance_pretrain.build_trading_methodology_sft(
+        100, 16, 2, torch.device("cpu"), str(tmp_path),
+        sentiment_ratio=1.0, balance_sentiment=True, max_response_share=0.20,
+    )
+
+    assert result == "dataset"
+    assert len(captured["pairs"]) == 6
+    responses = [response for _, response, _ in captured["pairs"]]
+    assert responses.count("neutral") == 1
+    assert responses.count("positive") == 1
+    assert responses.count("negative") == 1
+
+
+def test_phase4_builder_guard_rejects_dominant_label(monkeypatch, tmp_path):
+    fore = [("forecast", "long forecast response", "")]
+    sent = [(f"neutral-{i}", "neutral", "") for i in range(9)]
+    monkeypatch.setattr(
+        "datasets.load_dataset", lambda *args, **kwargs: MagicMock()
+    )
+    monkeypatch.setattr(
+        finance_pretrain,
+        "_extract_sft_pairs",
+        lambda ds, name, **kwargs: fore if "forecaster" in name else sent,
+    )
+
+    with pytest.raises(RuntimeError, match="collapse risk"):
+        finance_pretrain.build_trading_methodology_sft(
+            100, 16, 2, torch.device("cpu"), str(tmp_path),
+            sentiment_ratio=-1, balance_sentiment=False, max_response_share=0.20,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -501,26 +759,58 @@ class TestPhase2SkipCondition:
 # SFTDataset — response-only loss mask
 # ---------------------------------------------------------------------------
 
-def _make_sft_cache(tmpdir: Path, n_tokens: int = 200, prompt_frac: float = 0.3,
-                    suffix: str = "sft") -> Path:
+def _make_sft_cache(tmpdir: Path, seq_len: int = 8, n_examples: int = 8,
+                    prompt_frac: float = 0.3, suffix: str = "sft") -> Path:
     """
     Write a pre-built SFT cache (dict with 'ids' and 'mask') so tests bypass
     the internal GPT-2 tokenizer call that requires network access.
     mask is False for the first prompt_frac of tokens, True for the rest.
     """
-    ids  = torch.arange(n_tokens, dtype=torch.long) % 256
-    mask = torch.zeros(n_tokens, dtype=torch.bool)
-    mask[int(n_tokens * prompt_frac):] = True  # response portion
+    width = seq_len + 1
+    ids = torch.arange(n_examples * width, dtype=torch.long).reshape(n_examples, width) % 256
+    mask = torch.zeros((n_examples, width), dtype=torch.bool)
+    mask[:, int(width * prompt_frac):] = True  # response portion
     cache_path = tmpdir / f"sft_{suffix}_sft.pt"
-    torch.save({"ids": ids, "mask": mask}, cache_path)
+    torch.save({
+        "format": finance_pretrain._SFT_CACHE_FORMAT,
+        "ids": ids,
+        "mask": mask,
+    }, cache_path)
     return cache_path
 
 
 class TestSFTDataset:
 
+    def test_cache_preserves_one_example_per_row(self, monkeypatch, tmp_path):
+        class FakeTokenizer:
+            def encode(self, text, add_special_tokens=False):
+                return [ord(char) % 251 + 1 for char in text]
+
+        monkeypatch.setattr(finance_pretrain, "_get_gpt2_tokenizer", FakeTokenizer)
+        ds = SFTDataset(
+            pairs=[
+                ("first unique question", "first unique answer", ""),
+                ("second unique question", "second unique answer", ""),
+            ],
+            vocab_size=256,
+            seq_len=128,
+            batch_size=2,
+            device=torch.device("cpu"),
+            cache_path=tmp_path / "aligned.pt",
+        )
+
+        assert ds._ids.ndim == 2
+        assert ds._ids.shape == (2, 129)
+        assert ds._mask.shape == ds._ids.shape
+        assert torch.all((~ds._mask).any(dim=1))
+        assert torch.all(ds._mask.any(dim=1))
+
     def _make_ds(self, tmpdir: Path, seq_len: int = 8, batch_size: int = 2,
                  n_tokens: int = 400, suffix: str = "ds"):
-        cache_path = _make_sft_cache(tmpdir, n_tokens=n_tokens, suffix=suffix)
+        n_examples = max(batch_size, n_tokens // (seq_len + 1))
+        cache_path = _make_sft_cache(
+            tmpdir, seq_len=seq_len, n_examples=n_examples, suffix=suffix,
+        )
         return SFTDataset(
             pairs=[],            # empty — cache already present, no tokenisation needed
             vocab_size=256,
@@ -551,7 +841,7 @@ class TestSFTDataset:
     def test_sft_cache_uses_dict_format(self, tmp_path):
         """SFTDataset must persist cache as {"ids": tensor, "mask": tensor}."""
         # Write a cache, instantiate the dataset (it loads from cache), then verify the file
-        cache_path = _make_sft_cache(tmp_path, suffix="fmt")
+        cache_path = _make_sft_cache(tmp_path, seq_len=8, suffix="fmt")
         ds = SFTDataset(
             pairs=[],
             vocab_size=256,
@@ -562,7 +852,21 @@ class TestSFTDataset:
         )
         loaded = torch.load(cache_path, map_location="cpu", weights_only=False)
         assert isinstance(loaded, dict), "SFT cache must be a dict with 'ids' and 'mask'"
+        assert loaded["format"] == finance_pretrain._SFT_CACHE_FORMAT
         assert "ids" in loaded and "mask" in loaded
+
+    def test_legacy_flat_cache_is_rejected(self, tmp_path):
+        cache_path = tmp_path / "legacy.pt"
+        torch.save({
+            "ids": torch.arange(100),
+            "mask": torch.ones(100, dtype=torch.bool),
+        }, cache_path)
+
+        with pytest.raises(ValueError, match="Incompatible SFT cache format"):
+            SFTDataset(
+                pairs=[], vocab_size=256, seq_len=8, batch_size=2,
+                device=torch.device("cpu"), cache_path=cache_path,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -579,10 +883,15 @@ class TestFindLatestCkpt:
         (tmp_path / "phase4_final.pt").touch()
         assert find_latest_ckpt(str(tmp_path)).endswith("phase5_final.pt")
 
-    def test_phase4_beats_phase3(self, tmp_path):
+    def test_phase3_beats_unadopted_phase5(self, tmp_path):
+        (tmp_path / "phase3_final.pt").touch()
+        (tmp_path / "phase5_final.pt").touch()
+        assert find_latest_ckpt(str(tmp_path)).endswith("phase3_final.pt")
+
+    def test_phase3_beats_phase4(self, tmp_path):
         (tmp_path / "phase4_final.pt").touch()
         (tmp_path / "phase3_final.pt").touch()
-        assert find_latest_ckpt(str(tmp_path)).endswith("phase4_final.pt")
+        assert find_latest_ckpt(str(tmp_path)).endswith("phase3_final.pt")
 
     def test_phase3_beats_final(self, tmp_path):
         (tmp_path / "phase3_final.pt").touch()

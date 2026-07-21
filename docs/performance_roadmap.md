@@ -12,10 +12,43 @@
 - 生成時の最終位置だけの語彙projection
 - recurrent loopのgradient checkpointing
 - CUDA AMP（float16/bfloat16）、fused/8-bit AdamW、`torch.compile`
-- ACT curriculumのcompile-safe tensor buffer（A100定常計測済み、総wall-clock計測待ち）
+- ACT curriculumのcompile-safe tensor buffer（A100定常・本番総wall-clock計測済み）
 - dataset build、batch wait、optimizer、checkpoint save、総wall-clockの学習ログとJSON
 - ColabローカルNVMeへのatomic checkpoint保存と単一workerによる非同期Driveコピー
 - GQAとMLAによるKV cache圧縮
+- 正解付きFinance QAのPhase 2-5比較ハーネス（topic relevance、必須概念、数値、安全性、応答collapseの採用ゲート）
+
+性能面の最適化より先に解決すべき品質blockerがあります。v3の12問・3 seed評価ではPhase 2-5の
+pass率がすべて0%でした。Phase 4は36/36応答が`neutral`へcollapseし、Phase 5も必須概念recall
+3.7%、計算精度5.6%に留まりました。Phase 4の学習データはforecaster 1,230件に対してsentiment
+分類76,772件でした。Phase 3を共通起点にした500-step ablationでは、forecaster-onlyもscore
+0.256、必須概念recall 0.7%へ悪化しました。balanced 1:1はscore 0.142で、36/36応答が短い
+sentiment labelとなり、最大同一応答率27.8%でcollapse gateにも失敗しました。単なる件数不均衡
+ではなく、分類・予測taskを広範な生成QAへ混在させること自体が干渉要因です。そのためPhase 4は
+既定0 stepとして本番経路から除外し、Phase 5はPhase 3から直接開始します。Phase 4のguardと
+`training/run_phase4_ablation.py`はtask-specific実験の再現用に維持します。
+
+Phase 5も採用判定までは既定0 stepです。`finance_qa_curated_v1.json`に29件・8カテゴリの
+project-authored SFTを分離し、held-out 12問とのinstruction/response lexical similarityを学習前に
+全件監査します。現在の最大値はinstruction 0.617、response 0.374で、拒否閾値0.80を下回ります。
+`training/run_phase5_pilot.py`がPhase 3から500 stepを学習し、Phase 3・任意の旧Phase 5・pilotを
+同条件で比較します。gate通過と生成内容の人手確認まではchatの自動選択もPhase 3を優先します。
+
+初回curated 500-step pilotはscore 0.310、concept recall 8.8%へ改善した一方、pass率0%、数値精度
+5.6%、最大同一応答率22.2%で不採用でした。学習済み回答が無関係な質問へ再生された原因を追跡し、
+SFTDatasetが全exampleを1列へ連結して任意offsetを切り出し、promptを含まないresponse断片まで
+学習していたことを確認しました。現在は1 exampleを1 padded rowとして保持し、旧flat cacheを拒否、
+seq_lenをcache keyへ含めます。次の500-step rerunは他条件を固定し、layout修正だけを検証します。
+
+aligned 500-stepでは最大同一応答率が22.2%から5.6%、数値精度が5.6%から16.7%へ改善し、
+layout修正は有効でした。ただしscore 0.289、concept recall 5.3%、pass率0%で不採用です。
+10/50/200-step比較でも採用可能なdoseはありませんでした。10-stepはscore 0.320、concept recall
+10.4%で相対最高でしたが数値精度0%、50/200-stepはscore 0.278/0.282、concept recall 4.2%/4.4%へ
+後退し、数値精度だけが11.1%/16.7%へ上がりました。計算断片の記憶が増えてもpromptと値を正しく
+結び付けられていないため、これ以上のstep微調整は停止します。10-stepの唯一のpassもearningsを
+一度も述べない汎用文のkeyword偽陽性でした。評価rubricへcase固有topic anchorを追加し、次は
+curated dataの規模拡張と、step選択用in-distribution validationの分離へ進みます。最終12問は
+引き続き採用判定専用とし、学習・early stoppingには使用しません。
 
 最適化前後の比較では、同じcheckpoint、入力、loop数、dtype、deviceを使用します。速度だけでなく、logits一致、損失、perplexity、生成品質も確認します。
 
@@ -97,9 +130,9 @@ ACT curriculumを維持したまま`torch.compile`を本番runへ復帰できる
 
 compile回数、学習tokens/sec、loss、平均loop数、resume後のcurriculum位置を検証します。bufferをcheckpointへ保存するか、global stepから再計算するかも仕様として固定します。
 
-実装ではbufferを非永続としてcheckpoint schemaを維持し、`cfg`値をログ互換用に同期します。Python 3.9/PyTorch 2.2のDynamo counterではbuffer更新後の追加compileが発生せず、A100の定常計測でも計測区間の追加graphは0でした。次は実際のphaseログで、dataset、optimizer、checkpoint I/Oを含む総wall-clock効果を確認します。
+実装ではbufferを非永続としてcheckpoint schemaを維持し、`cfg`値をログ互換用に同期します。Python 3.9/PyTorch 2.2のDynamo counterではbuffer更新後の追加compileが発生せず、A100の定常計測でも計測区間の追加graphは0でした。A100本番runでもACT curriculum、compile、grouped MoE、fused AdamWを併用してstep 52,000まで完走しました。最後のresume区間（step 22,000-52,000）は30,165.8秒、3.932B tokens、139,333 effective tokens/secでした。eager本番runとの同条件A/Bではないため、compile単独の総wall-clock寄与は定常benchmarkの1.075倍を採用判断の根拠として維持します。
 
-## P1: ローカルcheckpoint保存と非同期Driveコピー（実装済み・本番計測待ち）
+## P1: ローカルcheckpoint保存と非同期Driveコピー（実装済み・本番健全性確認済み）
 
 ColabのDriveへ大きなcheckpointを直接、頻繁に保存すると、serializeとnetwork filesystem書き込みの間に学習が停止します。
 
@@ -111,11 +144,11 @@ ColabのDriveへ大きなcheckpointを直接、頻繁に保存すると、serial
 4. phase final checkpointはDriveへのcopy完了を確認してからphase完了とする。
 5. queue投入、pending数、copy完了時間、失敗理由を必ずログへ出す。copy失敗は次の投入またはflushで学習プロセスへ伝播させる。
 
-`--local_ckpt_dir /content/checkpoints/<run>`を指定した場合だけ非同期経路を有効にし、`--ckpt_dir`はresume元かつ耐久保存先のまま維持します。`wall_clock_phaseN.json`にはphase/総wall-clock、dataset build、data wait、optimizer、serialize、copy累計、最大queue深度を保存します。hard runtime lossではpending中のローカルファイルを失うため、phase finalのflushとDrive上の直近periodic checkpointを耐障害性の境界とします。
+`--local_ckpt_dir /content/checkpoints/<run>`を指定した場合だけ非同期経路を有効にし、`--ckpt_dir`はresume元かつ耐久保存先のまま維持します。既定の一意な`wall_clock_phaseN_stepsA-B_TIMESTAMP.json`にはphase/総wall-clock、dataset build、data wait、optimizer、serialize、copy累計、最大queue深度を保存します。resumeごとに別ファイルへ保存し、前区間の計測を上書きしません。hard runtime lossではpending中のローカルファイルを失うため、phase finalのflushとDrive上の直近periodic checkpointを耐障害性の境界とします。
 
 `training/report_wall_clock.py`を追加し、単一または複数phase reportから総wall-clock、phase時間、dataset build、data wait、optimizer、foreground serialize、background copy、copy帯域、queue深度を同じ形式で集計します。A/B比較ではphase名・step範囲・処理token数とdtype、compile、grouped MoE、Liger CE、optimizer backendが一致しなければ停止します。非同期copyにpendingまたはerrorが残るreportも無効です。backgroundの`copy_seconds`は学習と重なり得るためwall-clockから減算せず、直接保存runに対する`wall_clock_speedup`を採否指標にします。
 
-次の本番runで、直接Drive保存との総wall-clock差、foreground serialize時間、background copy時間、最大queue深度、Driveからのresumeを確認します。`max_queue_depth`が継続的に増える場合は保存間隔またはcheckpointサイズを見直します。
+A100本番runの最後のresume区間では21ファイル・24.85GBを120.65秒（196.5 MiB/s）でcopyし、最大queue深度1、pending 0、error 0でした。foreground serializeは41.4秒（phase wallの0.15%）に抑えられ、複数回のDrive resumeからstep 52,000まで完走したため、健全性と耐障害性の検証は完了です。直接Drive保存との同条件A/Bは未実施なので、非同期化単独のwall-clock speedupは未確定です。
 
 ## P1: MoE grouped GEMM
 

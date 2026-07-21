@@ -87,14 +87,14 @@ def apply_grouped_moe(
 # ---------------------------------------------------------------------------
 
 _PREFERRED_NAMES = [
-    "phase5_final.pt", "phase4_final.pt", "phase3_final.pt", "final.pt",
+    "phase3_final.pt", "phase5_final.pt", "phase4_final.pt", "final.pt",
     "phase2_final.pt", "phase1_final.pt",
 ]
 
 def find_latest_ckpt(ckpt_dir: str) -> Optional[str]:
     """
     ckpt_dir から最適なチェックポイントを選ぶ。
-    優先順位: phase5_final.pt > phase4_final.pt > phase3_final.pt > final.pt > phase2_final.pt > phase1_final.pt > 最新 step_*.pt
+    優先順位: phase3_final.pt > phase5_final.pt > phase4_final.pt > final.pt > phase2_final.pt > phase1_final.pt > 最新 step_*.pt
     """
     base = Path(ckpt_dir)
     if not base.exists():
@@ -416,7 +416,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ckpt",         default=None,
                    help="チェックポイントパス (省略時: --ckpt_dir から自動選択)")
     p.add_argument("--ckpt_dir",     default="checkpoints/finance_a100_v2",
-                   help="チェックポイントディレクトリ (phase5_final.pt → phase4_final.pt → phase3_final.pt → final.pt → phase2_final.pt → phase1_final.pt → step_*.pt の順で検索)")
+                   help="チェックポイントディレクトリ (phase3_final.pt → phase5_final.pt → phase4_final.pt → final.pt → phase2_final.pt → phase1_final.pt → step_*.pt の順で検索)")
     p.add_argument("--tokenizer",    default="auto", choices=["auto", "gpt2", "mythos"],
                    help="トークナイザ: auto (vocab_size で自動判定) / gpt2 / mythos")
     p.add_argument("--temp",         type=float, default=0.8,
