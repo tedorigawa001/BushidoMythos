@@ -1,0 +1,106 @@
+{
+  "counts": {
+    "train": 640,
+    "validation": 160,
+    "held_out": 12
+  },
+  "categories": {
+    "train": {
+      "calculation": 80,
+      "decision_safety": 80,
+      "event_risk": 80,
+      "macro": 80,
+      "market_structure": 80,
+      "portfolio": 80,
+      "risk_management": 80,
+      "risk_metrics": 80
+    },
+    "validation": {
+      "calculation": 20,
+      "decision_safety": 20,
+      "event_risk": 20,
+      "macro": 20,
+      "market_structure": 20,
+      "portfolio": 20,
+      "risk_management": 20,
+      "risk_metrics": 20
+    }
+  },
+  "scenario_families": {
+    "train": [
+      "central_bank_gap_control",
+      "commodity_report_jump",
+      "drawdown_governance",
+      "drawdown_recovery_arithmetic",
+      "expected_shortfall_use",
+      "factor_concentration",
+      "forecast_uncertainty",
+      "futures_risk_budget",
+      "option_spread_limit",
+      "order_book_execution",
+      "partial_fill_management",
+      "portfolio_heat_arithmetic",
+      "portfolio_heat_stress",
+      "real_rate_currency_channel",
+      "scenario_stress_design",
+      "yield_curve_repricing"
+    ],
+    "validation": [
+      "break_even_payoff_arithmetic",
+      "concentration_limit_review",
+      "credit_rating_event",
+      "election_weekend_gap",
+      "fiscal_supply_bonds",
+      "guaranteed_signal_claim",
+      "hedge_basis_risk",
+      "leverage_impact_arithmetic",
+      "liquidity_adjusted_var",
+      "model_drift_response",
+      "opening_auction",
+      "sector_overlap",
+      "short_sale_squeeze",
+      "stop_limit_tradeoff",
+      "terms_trade_currency",
+      "volatility_scaled_size"
+    ],
+    "held_out": [
+      "diversification",
+      "earnings_event",
+      "fed_inflation",
+      "guaranteed_return",
+      "leverage_risk",
+      "liquidity_risk",
+      "losing_position",
+      "overnight_position",
+      "position_size_calculation",
+      "reward_risk_calculation",
+      "stop_loss_placement",
+      "var_limitations"
+    ]
+  },
+  "calculation_examples": 100,
+  "held_out": {
+    "path": "training/eval_data/finance_qa_v2.json",
+    "version": "finance_qa_v2",
+    "sha256": "0c7dfdd169d9ee5628eb665e576389fde0bc4f10b808d19c757936e0729d79ec"
+  },
+  "checks": {
+    "unique_ids": true,
+    "unique_instructions": true,
+    "unique_responses": true,
+    "family_disjoint": true,
+    "calculations_recomputed": true
+  },
+  "version": "finance_qa_curated_v2",
+  "generator": "training/build_finance_qa_curated_v2.py",
+  "outputs": {
+    "train": {
+      "path": "training/train_data/finance_qa_curated_v2_train.json",
+      "sha256": "bda5ca2c413007e47b2240e69f5555d74910c27e0fc103d7bc682185897b1b41"
+    },
+    "validation": {
+      "path": "training/eval_data/finance_qa_curated_v2_validation.json",
+      "sha256": "0584798540a87f275122ee43012a7fa38f281fdc9bedcdae5d225c87379229e6"
+    }
+  }
+}

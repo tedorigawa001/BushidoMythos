@@ -1,0 +1,2768 @@
+{
+  "version": "finance_qa_curated_v2_validation",
+  "split": "validation",
+  "description": "Project-authored deterministic Finance QA SFT scenarios; family-disjoint from validation and final held-out evaluation.",
+  "license": "Project-authored synthetic instructional data",
+  "examples": [
+    {
+      "id": "validation_short_sale_squeeze_000",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. A short position in a equity index future faces a possible policy announcement. How should its asymmetric risk be limited to 0.25%? State the key limitation.",
+      "response": "A short equity index future can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the policy announcement can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 0.25%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_short_sale_squeeze_001",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. A short position in a government bond future faces a possible regulatory decision. How should its asymmetric risk be limited to 0.90%? Include the condition for rejecting the trade.",
+      "response": "A short government bond future can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the regulatory decision can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 0.90%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_short_sale_squeeze_002",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. A short position in a gold future faces a possible inventory report. How should its asymmetric risk be limited to 0.60%? Include the condition for rejecting the trade.",
+      "response": "A short gold future can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the inventory report can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 0.60%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_short_sale_squeeze_003",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. A short position in a energy future faces a possible employment release. How should its asymmetric risk be limited to 0.35%? State the key limitation.",
+      "response": "A short energy future can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the employment release can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 0.35%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_short_sale_squeeze_004",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. A short position in a major-currency pair faces a possible debt auction. How should its asymmetric risk be limited to 1.00%? Include the condition for rejecting the trade.",
+      "response": "A short major-currency pair can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the debt auction can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 1.00%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_short_sale_squeeze_005",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. A short position in a investment-grade bond faces a possible inflation release. How should its asymmetric risk be limited to 0.75%? Include the condition for rejecting the trade.",
+      "response": "A short investment-grade bond can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the inflation release can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 0.75%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_short_sale_squeeze_006",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. A short position in a technology stock faces a possible index rebalance. How should its asymmetric risk be limited to 0.50%? State the key limitation.",
+      "response": "A short technology stock can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the index rebalance can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 0.50%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_short_sale_squeeze_007",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. A short position in a bank stock faces a possible policy announcement. How should its asymmetric risk be limited to 0.25%? Include the condition for rejecting the trade.",
+      "response": "A short bank stock can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the policy announcement can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 0.25%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_short_sale_squeeze_008",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. A short position in a commodity ETF faces a possible regulatory decision. How should its asymmetric risk be limited to 0.90%? Include the condition for rejecting the trade.",
+      "response": "A short commodity ETF can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the regulatory decision can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 0.90%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_short_sale_squeeze_009",
+      "split": "validation",
+      "scenario_family": "short_sale_squeeze",
+      "template_id": "short_sale_squeeze_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. A short position in a rate swap faces a possible inventory report. How should its asymmetric risk be limited to 0.60%? State the key limitation.",
+      "response": "A short rate swap can lose more than its initial proceeds as price rises, while borrow recalls, fees, gaps, and the inventory report can accelerate losses. Cap quantity from a stressed buy-in price rather than a nearby stop alone, monitor borrow and margin, and keep the modeled account loss below 0.60%. Exit when the thesis fails instead of averaging into a squeeze. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_000",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. Volatility in a equity index future has risen sharply in the New York session. How should a 0.25% risk budget change position size? State the key limitation.",
+      "response": "Keep the 0.25% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller equity index future quantity. Add wider spread and slippage assumptions for the New York session, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_001",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. Volatility in a government bond future has risen sharply in the month-end window. How should a 0.90% risk budget change position size? Include the condition for rejecting the trade.",
+      "response": "Keep the 0.90% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller government bond future quantity. Add wider spread and slippage assumptions for the month-end window, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_002",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. Volatility in a gold future has risen sharply in the high-volume morning. How should a 0.60% risk budget change position size? Include the condition for rejecting the trade.",
+      "response": "Keep the 0.60% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller gold future quantity. Add wider spread and slippage assumptions for the high-volume morning, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_003",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. Volatility in a energy future has risen sharply in the Asian session. How should a 0.35% risk budget change position size? State the key limitation.",
+      "response": "Keep the 0.35% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller energy future quantity. Add wider spread and slippage assumptions for the Asian session, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_004",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. Volatility in a major-currency pair has risen sharply in the thin holiday session. How should a 1.00% risk budget change position size? Include the condition for rejecting the trade.",
+      "response": "Keep the 1.00% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller major-currency pair quantity. Add wider spread and slippage assumptions for the thin holiday session, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_005",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. Volatility in a investment-grade bond has risen sharply in the London session. How should a 0.75% risk budget change position size? Include the condition for rejecting the trade.",
+      "response": "Keep the 0.75% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller investment-grade bond quantity. Add wider spread and slippage assumptions for the London session, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_006",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. Volatility in a technology stock has risen sharply in the quarter-end window. How should a 0.50% risk budget change position size? State the key limitation.",
+      "response": "Keep the 0.50% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller technology stock quantity. Add wider spread and slippage assumptions for the quarter-end window, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_007",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. Volatility in a bank stock has risen sharply in the New York session. How should a 0.25% risk budget change position size? Include the condition for rejecting the trade.",
+      "response": "Keep the 0.25% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller bank stock quantity. Add wider spread and slippage assumptions for the New York session, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_008",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Explain the decision process. Volatility in a commodity ETF has risen sharply in the month-end window. How should a 0.90% risk budget change position size? Include the condition for rejecting the trade.",
+      "response": "Keep the 0.90% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller commodity ETF quantity. Add wider spread and slippage assumptions for the month-end window, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_volatility_scaled_size_009",
+      "split": "validation",
+      "scenario_family": "volatility_scaled_size",
+      "template_id": "volatility_scaled_size_v1",
+      "category": "risk_management",
+      "instruction": "Give a risk-controlled answer. Volatility in a rate swap has risen sharply in the high-volume morning. How should a 0.60% risk budget change position size? State the key limitation.",
+      "response": "Keep the 0.60% dollar budget fixed, recalculate a structurally valid invalidation distance using the higher volatility, and divide by the larger per-unit risk. This normally produces a smaller rate swap quantity. Add wider spread and slippage assumptions for the high-volume morning, and skip the trade if the minimum lot would exceed the budget. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_000",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. Two holdings in a equity index future sector appear different but share exposure to rates. How should diversification be assessed? State the key limitation.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to rates, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_001",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. Two holdings in a government bond future sector appear different but share exposure to volatility. How should diversification be assessed? Include the condition for rejecting the trade.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to volatility, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_002",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. Two holdings in a gold future sector appear different but share exposure to oil. How should diversification be assessed? Include the condition for rejecting the trade.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to oil, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_003",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. Two holdings in a energy future sector appear different but share exposure to the dollar. How should diversification be assessed? State the key limitation.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to the dollar, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_004",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. Two holdings in a major-currency pair sector appear different but share exposure to credit spreads. How should diversification be assessed? Include the condition for rejecting the trade.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to credit spreads, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_005",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. Two holdings in a investment-grade bond sector appear different but share exposure to equities. How should diversification be assessed? Include the condition for rejecting the trade.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to equities, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_006",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. Two holdings in a technology stock sector appear different but share exposure to rates. How should diversification be assessed? State the key limitation.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to rates, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_007",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. Two holdings in a bank stock sector appear different but share exposure to volatility. How should diversification be assessed? Include the condition for rejecting the trade.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to volatility, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_008",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. Two holdings in a commodity ETF sector appear different but share exposure to oil. How should diversification be assessed? Include the condition for rejecting the trade.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to oil, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_sector_overlap_009",
+      "split": "validation",
+      "scenario_family": "sector_overlap",
+      "template_id": "sector_overlap_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. Two holdings in a rate swap sector appear different but share exposure to the dollar. How should diversification be assessed? State the key limitation.",
+      "response": "Look through the labels and estimate both holdings' sensitivity to the dollar, common funding, and crowded ownership. Calculate combined contribution to risk under normal and stressed correlations, not merely the number of securities. Reduce concentration or add genuinely different exposures when a single shock could impair both positions. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_000",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. A portfolio uses a equity index future to hedge exposure to rates for 1 trading day. What basis risks remain? State the key limitation.",
+      "response": "The equity index future and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in rates, including roll and execution costs over 1 trading day. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_001",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. A portfolio uses a government bond future to hedge exposure to volatility for 2 trading days. What basis risks remain? Include the condition for rejecting the trade.",
+      "response": "The government bond future and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in volatility, including roll and execution costs over 2 trading days. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_002",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. A portfolio uses a gold future to hedge exposure to oil for 3 trading days. What basis risks remain? Include the condition for rejecting the trade.",
+      "response": "The gold future and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in oil, including roll and execution costs over 3 trading days. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_003",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. A portfolio uses a energy future to hedge exposure to the dollar for 4 trading days. What basis risks remain? State the key limitation.",
+      "response": "The energy future and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in the dollar, including roll and execution costs over 4 trading days. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_004",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. A portfolio uses a major-currency pair to hedge exposure to credit spreads for 5 trading days. What basis risks remain? Include the condition for rejecting the trade.",
+      "response": "The major-currency pair and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in credit spreads, including roll and execution costs over 5 trading days. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_005",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. A portfolio uses a investment-grade bond to hedge exposure to equities for 6 trading days. What basis risks remain? Include the condition for rejecting the trade.",
+      "response": "The investment-grade bond and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in equities, including roll and execution costs over 6 trading days. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_006",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. A portfolio uses a technology stock to hedge exposure to rates for 7 trading days. What basis risks remain? State the key limitation.",
+      "response": "The technology stock and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in rates, including roll and execution costs over 7 trading days. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_007",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. A portfolio uses a bank stock to hedge exposure to volatility for 8 trading days. What basis risks remain? Include the condition for rejecting the trade.",
+      "response": "The bank stock and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in volatility, including roll and execution costs over 8 trading days. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_008",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Explain the decision process. A portfolio uses a commodity ETF to hedge exposure to oil for 9 trading days. What basis risks remain? Include the condition for rejecting the trade.",
+      "response": "The commodity ETF and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in oil, including roll and execution costs over 9 trading days. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_hedge_basis_risk_009",
+      "split": "validation",
+      "scenario_family": "hedge_basis_risk",
+      "template_id": "hedge_basis_risk_v1",
+      "category": "portfolio",
+      "instruction": "Give a risk-controlled answer. A portfolio uses a rate swap to hedge exposure to the dollar for 10 trading days. What basis risks remain? State the key limitation.",
+      "response": "The rate swap and the exposure may respond differently as correlation, maturity, location, credit quality, or liquidity changes. Estimate hedge ratio uncertainty and stress divergence in the dollar, including roll and execution costs over 10 trading days. Set limits on residual exposure and monitor the relationship instead of assuming the hedge is exact. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_000",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A model trading a equity index future has underperformed for 1 trading day after a policy announcement. What review is appropriate? State the key limitation.",
+      "response": "Reduce or pause the equity index future allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the policy announcement. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_001",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A model trading a government bond future has underperformed for 2 trading days after a regulatory decision. What review is appropriate? Include the condition for rejecting the trade.",
+      "response": "Reduce or pause the government bond future allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the regulatory decision. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_002",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A model trading a gold future has underperformed for 3 trading days after a inventory report. What review is appropriate? Include the condition for rejecting the trade.",
+      "response": "Reduce or pause the gold future allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the inventory report. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_003",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A model trading a energy future has underperformed for 4 trading days after a employment release. What review is appropriate? State the key limitation.",
+      "response": "Reduce or pause the energy future allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the employment release. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_004",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A model trading a major-currency pair has underperformed for 5 trading days after a debt auction. What review is appropriate? Include the condition for rejecting the trade.",
+      "response": "Reduce or pause the major-currency pair allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the debt auction. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_005",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A model trading a investment-grade bond has underperformed for 6 trading days after a inflation release. What review is appropriate? Include the condition for rejecting the trade.",
+      "response": "Reduce or pause the investment-grade bond allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the inflation release. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_006",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A model trading a technology stock has underperformed for 7 trading days after a index rebalance. What review is appropriate? State the key limitation.",
+      "response": "Reduce or pause the technology stock allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the index rebalance. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_007",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A model trading a bank stock has underperformed for 8 trading days after a policy announcement. What review is appropriate? Include the condition for rejecting the trade.",
+      "response": "Reduce or pause the bank stock allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the policy announcement. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_008",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A model trading a commodity ETF has underperformed for 9 trading days after a regulatory decision. What review is appropriate? Include the condition for rejecting the trade.",
+      "response": "Reduce or pause the commodity ETF allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the regulatory decision. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_model_drift_response_009",
+      "split": "validation",
+      "scenario_family": "model_drift_response",
+      "template_id": "model_drift_response_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A model trading a rate swap has underperformed for 10 trading days after a inventory report. What review is appropriate? State the key limitation.",
+      "response": "Reduce or pause the rate swap allocation, verify inputs and implementation, and compare current feature and outcome distributions with training data after the inventory report. Test plausible regime changes on untouched samples and include costs. Restore risk only through a documented approval process; recent losses alone do not justify increasing size. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_000",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A vendor says its equity index future signal guarantees profit after every policy announcement. How should this claim be evaluated? State the key limitation.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple policy announcement regimes. Check selection and survivorship bias and never risk capital solely on the claim; all equity index future strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_001",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A vendor says its government bond future signal guarantees profit after every regulatory decision. How should this claim be evaluated? Include the condition for rejecting the trade.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple regulatory decision regimes. Check selection and survivorship bias and never risk capital solely on the claim; all government bond future strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_002",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A vendor says its gold future signal guarantees profit after every inventory report. How should this claim be evaluated? Include the condition for rejecting the trade.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple inventory report regimes. Check selection and survivorship bias and never risk capital solely on the claim; all gold future strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_003",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A vendor says its energy future signal guarantees profit after every employment release. How should this claim be evaluated? State the key limitation.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple employment release regimes. Check selection and survivorship bias and never risk capital solely on the claim; all energy future strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_004",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A vendor says its major-currency pair signal guarantees profit after every debt auction. How should this claim be evaluated? Include the condition for rejecting the trade.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple debt auction regimes. Check selection and survivorship bias and never risk capital solely on the claim; all major-currency pair strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_005",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A vendor says its investment-grade bond signal guarantees profit after every inflation release. How should this claim be evaluated? Include the condition for rejecting the trade.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple inflation release regimes. Check selection and survivorship bias and never risk capital solely on the claim; all investment-grade bond strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_006",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A vendor says its technology stock signal guarantees profit after every index rebalance. How should this claim be evaluated? State the key limitation.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple index rebalance regimes. Check selection and survivorship bias and never risk capital solely on the claim; all technology stock strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_007",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A vendor says its bank stock signal guarantees profit after every policy announcement. How should this claim be evaluated? Include the condition for rejecting the trade.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple policy announcement regimes. Check selection and survivorship bias and never risk capital solely on the claim; all bank stock strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_008",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Explain the decision process. A vendor says its commodity ETF signal guarantees profit after every regulatory decision. How should this claim be evaluated? Include the condition for rejecting the trade.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple regulatory decision regimes. Check selection and survivorship bias and never risk capital solely on the claim; all commodity ETF strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_guaranteed_signal_claim_009",
+      "split": "validation",
+      "scenario_family": "guaranteed_signal_claim",
+      "template_id": "guaranteed_signal_claim_v1",
+      "category": "decision_safety",
+      "instruction": "Give a risk-controlled answer. A vendor says its rate swap signal guarantees profit after every inventory report. How should this claim be evaluated? State the key limitation.",
+      "response": "Treat a guaranteed-profit claim as a red flag. Demand timestamped out-of-sample evidence, realistic costs, drawdowns, failure cases, and independent verification across multiple inventory report regimes. Check selection and survivorship bias and never risk capital solely on the claim; all rate swap strategies retain uncertainty and loss potential. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_opening_auction_000",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. A equity index future order is planned for an opening auction after a policy announcement. What execution risks matter? State the key limitation.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the policy announcement; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the equity index future order. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_opening_auction_001",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. A government bond future order is planned for an opening auction after a regulatory decision. What execution risks matter? Include the condition for rejecting the trade.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the regulatory decision; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the government bond future order. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_opening_auction_002",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. A gold future order is planned for an opening auction after a inventory report. What execution risks matter? Include the condition for rejecting the trade.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the inventory report; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the gold future order. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_opening_auction_003",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. A energy future order is planned for an opening auction after a employment release. What execution risks matter? State the key limitation.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the employment release; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the energy future order. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_opening_auction_004",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. A major-currency pair order is planned for an opening auction after a debt auction. What execution risks matter? Include the condition for rejecting the trade.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the debt auction; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the major-currency pair order. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_opening_auction_005",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. A investment-grade bond order is planned for an opening auction after a inflation release. What execution risks matter? Include the condition for rejecting the trade.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the inflation release; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the investment-grade bond order. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_opening_auction_006",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. A technology stock order is planned for an opening auction after a index rebalance. What execution risks matter? State the key limitation.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the index rebalance; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the technology stock order. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_opening_auction_007",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. A bank stock order is planned for an opening auction after a policy announcement. What execution risks matter? Include the condition for rejecting the trade.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the policy announcement; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the bank stock order. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_opening_auction_008",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. A commodity ETF order is planned for an opening auction after a regulatory decision. What execution risks matter? Include the condition for rejecting the trade.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the regulatory decision; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the commodity ETF order. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_opening_auction_009",
+      "split": "validation",
+      "scenario_family": "opening_auction",
+      "template_id": "opening_auction_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. A rate swap order is planned for an opening auction after a inventory report. What execution risks matter? State the key limitation.",
+      "response": "Indicative auction prices and imbalance can change rapidly after the inventory report; the final match may differ from continuous-market quotes. Set quantity and price constraints, monitor imbalance and cancellation rules, and plan for an unfilled residual. Include gap and post-open liquidity risk when sizing the rate swap order. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_000",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. Compare stop-market and stop-limit protection for a equity index future during a fast New York session move. State the key limitation.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast New York session. A stop-limit caps price but may not execute, leaving the equity index future exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_001",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. Compare stop-market and stop-limit protection for a government bond future during a fast month-end window move. Include the condition for rejecting the trade.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast month-end window. A stop-limit caps price but may not execute, leaving the government bond future exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_002",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. Compare stop-market and stop-limit protection for a gold future during a fast high-volume morning move. Include the condition for rejecting the trade.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast high-volume morning. A stop-limit caps price but may not execute, leaving the gold future exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_003",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. Compare stop-market and stop-limit protection for a energy future during a fast Asian session move. State the key limitation.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast Asian session. A stop-limit caps price but may not execute, leaving the energy future exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_004",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. Compare stop-market and stop-limit protection for a major-currency pair during a fast thin holiday session move. Include the condition for rejecting the trade.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast thin holiday session. A stop-limit caps price but may not execute, leaving the major-currency pair exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_005",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. Compare stop-market and stop-limit protection for a investment-grade bond during a fast London session move. Include the condition for rejecting the trade.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast London session. A stop-limit caps price but may not execute, leaving the investment-grade bond exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_006",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. Compare stop-market and stop-limit protection for a technology stock during a fast quarter-end window move. State the key limitation.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast quarter-end window. A stop-limit caps price but may not execute, leaving the technology stock exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_007",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. Compare stop-market and stop-limit protection for a bank stock during a fast New York session move. Include the condition for rejecting the trade.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast New York session. A stop-limit caps price but may not execute, leaving the bank stock exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_008",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Explain the decision process. Compare stop-market and stop-limit protection for a commodity ETF during a fast month-end window move. Include the condition for rejecting the trade.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast month-end window. A stop-limit caps price but may not execute, leaving the commodity ETF exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_stop_limit_tradeoff_009",
+      "split": "validation",
+      "scenario_family": "stop_limit_tradeoff",
+      "template_id": "stop_limit_tradeoff_v1",
+      "category": "market_structure",
+      "instruction": "Give a risk-controlled answer. Compare stop-market and stop-limit protection for a rate swap during a fast high-volume morning move. State the key limitation.",
+      "response": "After triggering, a stop-market order prioritizes execution but can fill far away in the fast high-volume morning. A stop-limit caps price but may not execute, leaving the rate swap exposure open. Neither guarantees the planned loss; choose from liquidity and urgency, size for gaps, and monitor any residual position. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_000",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A equity index future position spans a weekend election. How should gap risk be controlled within 0.25%? State the key limitation.",
+      "response": "Weekend results can move the next tradable equity index future price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 0.25%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_001",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A government bond future position spans a weekend election. How should gap risk be controlled within 0.90%? Include the condition for rejecting the trade.",
+      "response": "Weekend results can move the next tradable government bond future price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 0.90%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_002",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A gold future position spans a weekend election. How should gap risk be controlled within 0.60%? Include the condition for rejecting the trade.",
+      "response": "Weekend results can move the next tradable gold future price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 0.60%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_003",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A energy future position spans a weekend election. How should gap risk be controlled within 0.35%? State the key limitation.",
+      "response": "Weekend results can move the next tradable energy future price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 0.35%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_004",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A major-currency pair position spans a weekend election. How should gap risk be controlled within 1.00%? Include the condition for rejecting the trade.",
+      "response": "Weekend results can move the next tradable major-currency pair price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 1.00%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_005",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A investment-grade bond position spans a weekend election. How should gap risk be controlled within 0.75%? Include the condition for rejecting the trade.",
+      "response": "Weekend results can move the next tradable investment-grade bond price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 0.75%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_006",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A technology stock position spans a weekend election. How should gap risk be controlled within 0.50%? State the key limitation.",
+      "response": "Weekend results can move the next tradable technology stock price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 0.50%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_007",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A bank stock position spans a weekend election. How should gap risk be controlled within 0.25%? Include the condition for rejecting the trade.",
+      "response": "Weekend results can move the next tradable bank stock price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 0.25%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_008",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A commodity ETF position spans a weekend election. How should gap risk be controlled within 0.90%? Include the condition for rejecting the trade.",
+      "response": "Weekend results can move the next tradable commodity ETF price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 0.90%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_election_weekend_gap_009",
+      "split": "validation",
+      "scenario_family": "election_weekend_gap",
+      "template_id": "election_weekend_gap_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A rate swap position spans a weekend election. How should gap risk be controlled within 0.60%? State the key limitation.",
+      "response": "Weekend results can move the next tradable rate swap price beyond any protective trigger and can impair liquidity. Model multiple election outcomes and correlated market gaps, then reduce or close the position when stressed loss exceeds 0.60%. Options can bound some outcomes only if strike, expiry, and counterparty liquidity remain effective. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_000",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A rating review may affect a equity index future over 1 trading day. What risks should be considered? State the key limitation.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the equity index future. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 1 trading day loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_001",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A rating review may affect a government bond future over 2 trading days. What risks should be considered? Include the condition for rejecting the trade.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the government bond future. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 2 trading days loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_002",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A rating review may affect a gold future over 3 trading days. What risks should be considered? Include the condition for rejecting the trade.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the gold future. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 3 trading days loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_003",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A rating review may affect a energy future over 4 trading days. What risks should be considered? State the key limitation.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the energy future. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 4 trading days loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_004",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A rating review may affect a major-currency pair over 5 trading days. What risks should be considered? Include the condition for rejecting the trade.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the major-currency pair. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 5 trading days loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_005",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A rating review may affect a investment-grade bond over 6 trading days. What risks should be considered? Include the condition for rejecting the trade.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the investment-grade bond. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 6 trading days loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_006",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A rating review may affect a technology stock over 7 trading days. What risks should be considered? State the key limitation.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the technology stock. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 7 trading days loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_007",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A rating review may affect a bank stock over 8 trading days. What risks should be considered? Include the condition for rejecting the trade.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the bank stock. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 8 trading days loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_008",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Explain the decision process. A rating review may affect a commodity ETF over 9 trading days. What risks should be considered? Include the condition for rejecting the trade.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the commodity ETF. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 9 trading days loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_credit_rating_event_009",
+      "split": "validation",
+      "scenario_family": "credit_rating_event",
+      "template_id": "credit_rating_event_v1",
+      "category": "event_risk",
+      "instruction": "Give a risk-controlled answer. A rating review may affect a rate swap over 10 trading days. What risks should be considered? State the key limitation.",
+      "response": "A downgrade or outlook change can widen spreads, trigger mandate-driven selling, alter collateral terms, and reduce liquidity in the rate swap. Compare possible decisions with market expectations, stress related issuers and hedges, and reduce exposure when the 10 trading days loss or funding demand breaches limits. The announcement direction is not certain. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_000",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How could heavier government issuance affect a equity index future over 1 trading day? State the key limitation.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the equity index future price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 1 trading day. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_001",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How could heavier government issuance affect a government bond future over 2 trading days? Include the condition for rejecting the trade.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the government bond future price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 2 trading days. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_002",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How could heavier government issuance affect a gold future over 3 trading days? Include the condition for rejecting the trade.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the gold future price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 3 trading days. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_003",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How could heavier government issuance affect a energy future over 4 trading days? State the key limitation.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the energy future price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 4 trading days. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_004",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How could heavier government issuance affect a major-currency pair over 5 trading days? Include the condition for rejecting the trade.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the major-currency pair price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 5 trading days. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_005",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How could heavier government issuance affect a investment-grade bond over 6 trading days? Include the condition for rejecting the trade.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the investment-grade bond price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 6 trading days. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_006",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How could heavier government issuance affect a technology stock over 7 trading days? State the key limitation.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the technology stock price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 7 trading days. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_007",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How could heavier government issuance affect a bank stock over 8 trading days? Include the condition for rejecting the trade.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the bank stock price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 8 trading days. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_008",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How could heavier government issuance affect a commodity ETF over 9 trading days? Include the condition for rejecting the trade.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the commodity ETF price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 9 trading days. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_fiscal_supply_bonds_009",
+      "split": "validation",
+      "scenario_family": "fiscal_supply_bonds",
+      "template_id": "fiscal_supply_bonds_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How could heavier government issuance affect a rate swap over 10 trading days? State the key limitation.",
+      "response": "More supply can raise the yield concession required by buyers and pressure the rate swap price, but demand, central-bank policy, maturity mix, and prior expectations can offset it. Test parallel and curve-shape changes over 10 trading days. Present the result as conditional scenarios, not a certain selloff. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_000",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How can a change in commodity export prices affect rates after a policy announcement? State the key limitation.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to rates, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the policy announcement had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_001",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How can a change in commodity export prices affect volatility after a regulatory decision? Include the condition for rejecting the trade.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to volatility, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the regulatory decision had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_002",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How can a change in commodity export prices affect oil after a inventory report? Include the condition for rejecting the trade.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to oil, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the inventory report had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_003",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How can a change in commodity export prices affect the dollar after a employment release? State the key limitation.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to the dollar, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the employment release had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_004",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How can a change in commodity export prices affect credit spreads after a debt auction? Include the condition for rejecting the trade.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to credit spreads, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the debt auction had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_005",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How can a change in commodity export prices affect equities after a inflation release? Include the condition for rejecting the trade.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to equities, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the inflation release had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_006",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How can a change in commodity export prices affect rates after a index rebalance? State the key limitation.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to rates, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the index rebalance had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_007",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How can a change in commodity export prices affect volatility after a policy announcement? Include the condition for rejecting the trade.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to volatility, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the policy announcement had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_008",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Explain the decision process. How can a change in commodity export prices affect oil after a regulatory decision? Include the condition for rejecting the trade.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to oil, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the regulatory decision had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_terms_trade_currency_009",
+      "split": "validation",
+      "scenario_family": "terms_trade_currency",
+      "template_id": "terms_trade_currency_v1",
+      "category": "macro",
+      "instruction": "Give a risk-controlled answer. How can a change in commodity export prices affect the dollar after a inventory report? State the key limitation.",
+      "response": "Improved export prices may support income, trade balances, and assets linked to the dollar, while weaker prices can reverse that channel. The response also depends on import costs, hedging, policy, global risk appetite, and what the inventory report had already priced. Compare relative-country effects and avoid a deterministic currency forecast. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_000",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. Why might ordinary value at risk understate losses for a equity index future during the New York session? State the key limitation.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the equity index future. Adjust the horizon and costs for stressed depth in the New York session, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_001",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. Why might ordinary value at risk understate losses for a government bond future during the month-end window? Include the condition for rejecting the trade.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the government bond future. Adjust the horizon and costs for stressed depth in the month-end window, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_002",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. Why might ordinary value at risk understate losses for a gold future during the high-volume morning? Include the condition for rejecting the trade.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the gold future. Adjust the horizon and costs for stressed depth in the high-volume morning, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_003",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. Why might ordinary value at risk understate losses for a energy future during the Asian session? State the key limitation.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the energy future. Adjust the horizon and costs for stressed depth in the Asian session, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_004",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. Why might ordinary value at risk understate losses for a major-currency pair during the thin holiday session? Include the condition for rejecting the trade.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the major-currency pair. Adjust the horizon and costs for stressed depth in the thin holiday session, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_005",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. Why might ordinary value at risk understate losses for a investment-grade bond during the London session? Include the condition for rejecting the trade.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the investment-grade bond. Adjust the horizon and costs for stressed depth in the London session, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_006",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. Why might ordinary value at risk understate losses for a technology stock during the quarter-end window? State the key limitation.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the technology stock. Adjust the horizon and costs for stressed depth in the quarter-end window, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_007",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. Why might ordinary value at risk understate losses for a bank stock during the New York session? Include the condition for rejecting the trade.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the bank stock. Adjust the horizon and costs for stressed depth in the New York session, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_008",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. Why might ordinary value at risk understate losses for a commodity ETF during the month-end window? Include the condition for rejecting the trade.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the commodity ETF. Adjust the horizon and costs for stressed depth in the month-end window, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_liquidity_adjusted_var_009",
+      "split": "validation",
+      "scenario_family": "liquidity_adjusted_var",
+      "template_id": "liquidity_adjusted_var_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. Why might ordinary value at risk understate losses for a rate swap during the high-volume morning? State the key limitation.",
+      "response": "Ordinary value at risk may use normal returns and a fixed holding period while ignoring widening spreads, market impact, and the time needed to liquidate the rate swap. Adjust the horizon and costs for stressed depth in the high-volume morning, then supplement the estimate with expected shortfall and explicit gap scenarios. It remains an estimate, not a loss ceiling. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_000",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. How should a concentration limit for exposure to rates be tested around a policy announcement? State the key limitation.",
+      "response": "Measure gross, net, and nonlinear sensitivity to rates, including indirect positions and contingent exposures. Stress the policy announcement with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 1 trading day.",
+      "parameters": {
+        "instrument": "equity index future",
+        "market": "New York session",
+        "horizon": "1 trading day",
+        "limit": "0.25",
+        "factor": "rates",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_001",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. How should a concentration limit for exposure to volatility be tested around a regulatory decision? Include the condition for rejecting the trade.",
+      "response": "Measure gross, net, and nonlinear sensitivity to volatility, including indirect positions and contingent exposures. Stress the regulatory decision with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 2 trading days.",
+      "parameters": {
+        "instrument": "government bond future",
+        "market": "month-end window",
+        "horizon": "2 trading days",
+        "limit": "0.90",
+        "factor": "volatility",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_002",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. How should a concentration limit for exposure to oil be tested around a inventory report? Include the condition for rejecting the trade.",
+      "response": "Measure gross, net, and nonlinear sensitivity to oil, including indirect positions and contingent exposures. Stress the inventory report with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 3 trading days.",
+      "parameters": {
+        "instrument": "gold future",
+        "market": "high-volume morning",
+        "horizon": "3 trading days",
+        "limit": "0.60",
+        "factor": "oil",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_003",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. How should a concentration limit for exposure to the dollar be tested around a employment release? State the key limitation.",
+      "response": "Measure gross, net, and nonlinear sensitivity to the dollar, including indirect positions and contingent exposures. Stress the employment release with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 4 trading days.",
+      "parameters": {
+        "instrument": "energy future",
+        "market": "Asian session",
+        "horizon": "4 trading days",
+        "limit": "0.35",
+        "factor": "the dollar",
+        "event": "employment release"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_004",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. How should a concentration limit for exposure to credit spreads be tested around a debt auction? Include the condition for rejecting the trade.",
+      "response": "Measure gross, net, and nonlinear sensitivity to credit spreads, including indirect positions and contingent exposures. Stress the debt auction with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 5 trading days.",
+      "parameters": {
+        "instrument": "major-currency pair",
+        "market": "thin holiday session",
+        "horizon": "5 trading days",
+        "limit": "1.00",
+        "factor": "credit spreads",
+        "event": "debt auction"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_005",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. How should a concentration limit for exposure to equities be tested around a inflation release? Include the condition for rejecting the trade.",
+      "response": "Measure gross, net, and nonlinear sensitivity to equities, including indirect positions and contingent exposures. Stress the inflation release with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 6 trading days.",
+      "parameters": {
+        "instrument": "investment-grade bond",
+        "market": "London session",
+        "horizon": "6 trading days",
+        "limit": "0.75",
+        "factor": "equities",
+        "event": "inflation release"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_006",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. How should a concentration limit for exposure to rates be tested around a index rebalance? State the key limitation.",
+      "response": "Measure gross, net, and nonlinear sensitivity to rates, including indirect positions and contingent exposures. Stress the index rebalance with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 7 trading days.",
+      "parameters": {
+        "instrument": "technology stock",
+        "market": "quarter-end window",
+        "horizon": "7 trading days",
+        "limit": "0.50",
+        "factor": "rates",
+        "event": "index rebalance"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_007",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. How should a concentration limit for exposure to volatility be tested around a policy announcement? Include the condition for rejecting the trade.",
+      "response": "Measure gross, net, and nonlinear sensitivity to volatility, including indirect positions and contingent exposures. Stress the policy announcement with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 8 trading days.",
+      "parameters": {
+        "instrument": "bank stock",
+        "market": "New York session",
+        "horizon": "8 trading days",
+        "limit": "0.25",
+        "factor": "volatility",
+        "event": "policy announcement"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_008",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Explain the decision process. How should a concentration limit for exposure to oil be tested around a regulatory decision? Include the condition for rejecting the trade.",
+      "response": "Measure gross, net, and nonlinear sensitivity to oil, including indirect positions and contingent exposures. Stress the regulatory decision with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 9 trading days.",
+      "parameters": {
+        "instrument": "commodity ETF",
+        "market": "month-end window",
+        "horizon": "9 trading days",
+        "limit": "0.90",
+        "factor": "oil",
+        "event": "regulatory decision"
+      }
+    },
+    {
+      "id": "validation_concentration_limit_review_009",
+      "split": "validation",
+      "scenario_family": "concentration_limit_review",
+      "template_id": "concentration_limit_review_v1",
+      "category": "risk_metrics",
+      "instruction": "Give a risk-controlled answer. How should a concentration limit for exposure to the dollar be tested around a inventory report? State the key limitation.",
+      "response": "Measure gross, net, and nonlinear sensitivity to the dollar, including indirect positions and contingent exposures. Stress the inventory report with correlation, liquidity, and margin changes and compare the resulting loss with capital and cash buffers. A nominal position percentage alone is insufficient; set escalation and reduction actions before the limit is reached. Reassess these controls if conditions change within 10 trading days.",
+      "parameters": {
+        "instrument": "rate swap",
+        "market": "high-volume morning",
+        "horizon": "10 trading days",
+        "limit": "0.60",
+        "factor": "the dollar",
+        "event": "inventory report"
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_000",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $80 on a win and loses $45 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $80p - $45(1-p) = 0, so p = 45 / (80 + 45) = 36.00%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "80",
+          "loss": "45"
+        },
+        "outputs": {
+          "win_rate_percent": "36.00"
+        }
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_001",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $87 on a win and loses $48 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $87p - $48(1-p) = 0, so p = 48 / (87 + 48) = 35.56%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "87",
+          "loss": "48"
+        },
+        "outputs": {
+          "win_rate_percent": "35.56"
+        }
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_002",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $94 on a win and loses $51 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $94p - $51(1-p) = 0, so p = 51 / (94 + 51) = 35.17%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "94",
+          "loss": "51"
+        },
+        "outputs": {
+          "win_rate_percent": "35.17"
+        }
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_003",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $101 on a win and loses $54 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $101p - $54(1-p) = 0, so p = 54 / (101 + 54) = 34.84%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "101",
+          "loss": "54"
+        },
+        "outputs": {
+          "win_rate_percent": "34.84"
+        }
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_004",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $108 on a win and loses $57 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $108p - $57(1-p) = 0, so p = 57 / (108 + 57) = 34.55%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "108",
+          "loss": "57"
+        },
+        "outputs": {
+          "win_rate_percent": "34.55"
+        }
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_005",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $115 on a win and loses $60 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $115p - $60(1-p) = 0, so p = 60 / (115 + 60) = 34.29%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "115",
+          "loss": "60"
+        },
+        "outputs": {
+          "win_rate_percent": "34.29"
+        }
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_006",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $122 on a win and loses $63 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $122p - $63(1-p) = 0, so p = 63 / (122 + 63) = 34.05%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "122",
+          "loss": "63"
+        },
+        "outputs": {
+          "win_rate_percent": "34.05"
+        }
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_007",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $129 on a win and loses $66 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $129p - $66(1-p) = 0, so p = 66 / (129 + 66) = 33.85%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "129",
+          "loss": "66"
+        },
+        "outputs": {
+          "win_rate_percent": "33.85"
+        }
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_008",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $136 on a win and loses $69 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $136p - $69(1-p) = 0, so p = 69 / (136 + 69) = 33.66%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "136",
+          "loss": "69"
+        },
+        "outputs": {
+          "win_rate_percent": "33.66"
+        }
+      }
+    },
+    {
+      "id": "validation_break_even_payoff_arithmetic_009",
+      "split": "validation",
+      "scenario_family": "break_even_payoff_arithmetic",
+      "template_id": "break_even_payoff_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Before costs, a strategy gains $143 on a win and loses $72 on a loss. Calculate the break-even win rate.",
+      "response": "Let p be the win rate. Break-even requires $143p - $72(1-p) = 0, so p = 72 / (143 + 72) = 33.49%. Costs and changing payoff distributions would raise or destabilize this threshold.",
+      "calculation": {
+        "formula": "break_even_rate",
+        "inputs": {
+          "win": "143",
+          "loss": "72"
+        },
+        "outputs": {
+          "win_rate_percent": "33.49"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_000",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 2 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 0.50% adverse asset move.",
+      "response": "The linear estimate is 2 times 0.50%, which equals an approximately 1.00% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "2",
+          "adverse_move_percent": "0.50"
+        },
+        "outputs": {
+          "equity_impact_percent": "1.00"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_001",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 3 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 0.75% adverse asset move.",
+      "response": "The linear estimate is 3 times 0.75%, which equals an approximately 2.25% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "3",
+          "adverse_move_percent": "0.75"
+        },
+        "outputs": {
+          "equity_impact_percent": "2.25"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_002",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 4 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 1.00% adverse asset move.",
+      "response": "The linear estimate is 4 times 1.00%, which equals an approximately 4.00% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "4",
+          "adverse_move_percent": "1.00"
+        },
+        "outputs": {
+          "equity_impact_percent": "4.00"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_003",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 5 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 1.25% adverse asset move.",
+      "response": "The linear estimate is 5 times 1.25%, which equals an approximately 6.25% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "5",
+          "adverse_move_percent": "1.25"
+        },
+        "outputs": {
+          "equity_impact_percent": "6.25"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_004",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 6 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 1.50% adverse asset move.",
+      "response": "The linear estimate is 6 times 1.50%, which equals an approximately 9.00% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "6",
+          "adverse_move_percent": "1.50"
+        },
+        "outputs": {
+          "equity_impact_percent": "9.00"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_005",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 7 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 1.75% adverse asset move.",
+      "response": "The linear estimate is 7 times 1.75%, which equals an approximately 12.25% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "7",
+          "adverse_move_percent": "1.75"
+        },
+        "outputs": {
+          "equity_impact_percent": "12.25"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_006",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 8 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 2.00% adverse asset move.",
+      "response": "The linear estimate is 8 times 2.00%, which equals an approximately 16.00% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "8",
+          "adverse_move_percent": "2.00"
+        },
+        "outputs": {
+          "equity_impact_percent": "16.00"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_007",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 2 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 2.25% adverse asset move.",
+      "response": "The linear estimate is 2 times 2.25%, which equals an approximately 4.50% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "2",
+          "adverse_move_percent": "2.25"
+        },
+        "outputs": {
+          "equity_impact_percent": "4.50"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_008",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 3 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 2.50% adverse asset move.",
+      "response": "The linear estimate is 3 times 2.50%, which equals an approximately 7.50% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "3",
+          "adverse_move_percent": "2.50"
+        },
+        "outputs": {
+          "equity_impact_percent": "7.50"
+        }
+      }
+    },
+    {
+      "id": "validation_leverage_impact_arithmetic_009",
+      "split": "validation",
+      "scenario_family": "leverage_impact_arithmetic",
+      "template_id": "leverage_impact_arithmetic_v1",
+      "category": "calculation",
+      "instruction": "Gross exposure is 4 times account equity. Ignoring financing and liquidation, approximate the equity impact of a 0.50% adverse asset move.",
+      "response": "The linear estimate is 4 times 0.50%, which equals an approximately 2.00% equity loss. It is not a worst-case bound because gaps, margin changes, slippage, and nonlinear instruments can increase loss.",
+      "calculation": {
+        "formula": "leverage_impact",
+        "inputs": {
+          "leverage": "4",
+          "adverse_move_percent": "0.50"
+        },
+        "outputs": {
+          "equity_impact_percent": "2.00"
+        }
+      }
+    }
+  ]
+}
